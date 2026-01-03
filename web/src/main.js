@@ -10,6 +10,8 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "&copy; OpenStreetMap contributors",
 }).addTo(map);
 
+let currentLayer = null;
+
 function formatTime(ms) {
   if (typeof ms !== "number") return "N/A";
   return new Date(ms).toLocaleString();
@@ -30,13 +32,13 @@ function radiusByMag(mag) {
   return Math.max(3, mag * 2.2);
 }
 
-async function loadData() {
-  const resp = await fetch(`${BACKEND_BASE}/api/usgs-test`);
-  if (!resp.ok) throw new Error(`Backend ${resp.status}`);
-  const payload = await resp.json();
+function renderGeoJSON(geojson) {
+  if (currentLayer) {
+    map.removeLayer(currentLayer);
+    currentLayer = null;
+  }
 
-  const geojson = payload.geojson;
-  const layer = L.geoJSON(geojson, {
+  currentLayer = L.geoJSON(geojson, {
     pointToLayer: (feature, latlng) => {
       const mag = feature?.properties?.mag;
       return L.circleMarker(latlng, {
@@ -63,11 +65,58 @@ async function loadData() {
   }).addTo(map);
 
   try {
-    map.fitBounds(layer.getBounds().pad(0.2));
+    map.fitBounds(currentLayer.getBounds().pad(0.2));
   } catch {}
 }
 
-loadData().catch((e) => {
-  console.error(e);
-  alert(`Load failed: ${e.message}`);
+function setInfo(obj) {
+  document.getElementById("info").textContent = JSON.stringify(obj, null, 2);
+}
+
+async function runNLQuery() {
+  const q = document.getElementById("nl").value.trim();
+  if (!q) return;
+
+  const resp = await fetch(`${BACKEND_BASE}/api/nl-query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: q }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Backend ${resp.status}: ${text}`);
+  }
+
+  const payload = await resp.json();
+  renderGeoJSON(payload.geojson);
+  setInfo({ plan: payload.plan, stats: payload.stats, request: payload.request });
+}
+
+document.getElementById("run-nl").addEventListener("click", () => {
+  runNLQuery().catch((e) => {
+    console.error(e);
+    alert(e.message);
+  });
 });
+
+document.getElementById("nl").value = "过去7天震级大于5的地震";
+
+document.getElementById("run").addEventListener("click", () => {
+  runQuery().catch((e) => {
+    console.error(e);
+    alert(e.message);
+  });
+});
+
+// 默认日期：最近 7 天
+(function setDefaultDates() {
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 3600 * 1000);
+  const toISO = (d) => d.toISOString().slice(0, 10);
+  document.getElementById("end").value = toISO(end);
+  document.getElementById("start").value = toISO(start);
+})();
+
+// 启动时跑一次
+runQuery().catch(console.error);
