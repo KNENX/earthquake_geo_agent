@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
@@ -11,15 +12,80 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from pathlib import Path
+
 load_dotenv()
 
 USGS_EVENT_QUERY_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
 
 # -----------------------------
+# Simple in-memory cache for USGS responses
+# -----------------------------
+# key -> (expire_ts, geojson_dict)
+_USGS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+USGS_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
+def _cache_key_from_params(params: Dict[str, Any]) -> str:
+    return json.dumps(params, sort_keys=True, ensure_ascii=False)
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    item = _USGS_CACHE.get(key)
+    if not item:
+        return None
+    expire_ts, value = item
+    if time.time() > expire_ts:
+        _USGS_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value: Dict[str, Any]) -> None:
+    _USGS_CACHE[key] = (time.time() + USGS_CACHE_TTL_SECONDS, value)
+
+
+def _cache_gc(max_items: int = 200) -> None:
+    now = time.time()
+    expired = [k for k, (exp, _) in _USGS_CACHE.items() if exp <= now]
+    for k in expired:
+        _USGS_CACHE.pop(k, None)
+
+    if len(_USGS_CACHE) > max_items:
+        for k in list(_USGS_CACHE.keys())[: len(_USGS_CACHE) - max_items]:
+            _USGS_CACHE.pop(k, None)
+
+
+# -----------------------------
+# Logging (JSONL)
+# -----------------------------
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_FILE = LOG_DIR / "queries.jsonl"
+PROMPT_VERSION = "v1.0"   # 你每次改 prompt 就改一下这个版本号，方便论文对比
+APP_VERSION = "0.3.0"     # 你可以跟 FastAPI version 对齐
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+def _append_jsonl(record: Dict[str, Any]) -> None:
+    """
+    Append one JSON record per line.
+    Keep it robust: logging errors should not crash the API.
+    """
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # 不让日志写入失败影响接口正常返回
+        pass
+
+# -----------------------------
 # App
 # -----------------------------
-app = FastAPI(title="Earthquake Agent API", version="0.2.0")
+app = FastAPI(title="Earthquake Agent API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,10 +111,6 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
 
 
 def _extract_llm_content_openai_compat(resp_json: Dict[str, Any]) -> str:
-    """
-    Parse OpenAI-compatible chat.completions response:
-    { choices: [ { message: { content: "..." } } ] }
-    """
     try:
         return resp_json["choices"][0]["message"]["content"]
     except Exception as e:
@@ -95,10 +157,6 @@ def plan_to_usgs_params(plan: QueryPlan) -> Dict[str, Any]:
 
 
 def build_prompt(nl: str, today: str) -> str:
-    """
-    Prompt for stable JSON output.
-    We include 'today' so the model can resolve "past N days".
-    """
     return f"""
 今天日期是：{today}
 
@@ -134,10 +192,6 @@ def build_prompt(nl: str, today: str) -> str:
 
 
 async def llm_to_plan(nl: str) -> QueryPlan:
-    """
-    Call SiliconFlow (OpenAI-compatible) to produce QueryPlan JSON.
-    Includes one repair retry if JSON/schema parsing fails.
-    """
     api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
     base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip()
     model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
@@ -145,8 +199,6 @@ async def llm_to_plan(nl: str) -> QueryPlan:
     if not api_key:
         raise HTTPException(status_code=500, detail="Missing SILICONFLOW_API_KEY in api/.env")
 
-    # SiliconFlow OpenAI-compatible endpoint (commonly):
-    # POST {base_url}/chat/completions
     llm_url = f"{base_url}/chat/completions"
 
     today = date.today().isoformat()
@@ -157,7 +209,6 @@ async def llm_to_plan(nl: str) -> QueryPlan:
         "Content-Type": "application/json",
     }
 
-    # First attempt
     body = {
         "model": model,
         "temperature": 0,
@@ -183,13 +234,13 @@ async def llm_to_plan(nl: str) -> QueryPlan:
     try:
         return _parse_plan(content1)
     except Exception as e1:
-        # Repair attempt
         repair_prompt = (
             "你的输出不符合要求。你必须只输出严格 JSON，且符合 Schema。\n"
             f"错误信息：{str(e1)}\n"
             f"你的上一次输出：{content1}\n"
             "请只输出修正后的 JSON："
         )
+
         body2 = {
             "model": model,
             "temperature": 0,
@@ -217,7 +268,18 @@ async def llm_to_plan(nl: str) -> QueryPlan:
             ) from e2
 
 
-async def fetch_usgs(params: Dict[str, Any]) -> Dict[str, Any]:
+async def fetch_usgs(params: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """
+    Fetch USGS GeoJSON with in-memory cache.
+    Returns: (geojson, cache_hit)
+    """
+    _cache_gc()
+
+    key = _cache_key_from_params(params)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached, True
+
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(USGS_EVENT_QUERY_URL, params=params)
@@ -236,7 +298,8 @@ async def fetch_usgs(params: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(data, dict) or data.get("type") != "FeatureCollection":
         raise HTTPException(status_code=502, detail="USGS response is not GeoJSON FeatureCollection")
 
-    return data
+    _cache_set(key, data)
+    return data, False
 
 
 def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
@@ -267,9 +330,6 @@ def health() -> Dict[str, str]:
 
 @app.get("/api/usgs-test")
 async def usgs_test() -> Dict[str, Any]:
-    """
-    MVP test: last 7 days, min magnitude 4.5, limit 100.
-    """
     today = date.today()
     start = today - timedelta(days=7)
 
@@ -282,8 +342,13 @@ async def usgs_test() -> Dict[str, Any]:
         "orderby": "time",
     }
 
-    data = await fetch_usgs(params)
-    return {"source": "usgs", "request": {"url": USGS_EVENT_QUERY_URL, "params": params}, "geojson": data}
+    geo, cache_hit = await fetch_usgs(params)
+    return {
+        "source": "usgs",
+        "request": {"url": USGS_EVENT_QUERY_URL, "params": params},
+        "geojson": geo,
+        "cache_hit": cache_hit,
+    }
 
 
 @app.get("/api/query-usgs")
@@ -306,24 +371,96 @@ async def query_usgs(
         "orderby": orderby,
     }
 
-    geo = await fetch_usgs(params)
+    geo, cache_hit = await fetch_usgs(params)
     return {
         "source": "usgs",
         "request": {"url": USGS_EVENT_QUERY_URL, "params": params},
         "geojson": geo,
         "stats": compute_stats(geo),
+        "cache_hit": cache_hit,
     }
 
 
 @app.post("/api/nl-query")
 async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
-    plan = await llm_to_plan(payload.query)
-    params = plan_to_usgs_params(plan)
-    geo = await fetch_usgs(params)
+    t0 = time.perf_counter()
 
-    return {
-        "plan": plan.model_dump(),
-        "request": {"url": USGS_EVENT_QUERY_URL, "params": params},
-        "geojson": geo,
-        "stats": compute_stats(geo),
+    record: Dict[str, Any] = {
+        "ts": _now_iso(),
+        "endpoint": "/api/nl-query",
+        "app_version": APP_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "status": "unknown",
+        "user_query": payload.query,
     }
+
+    plan: Optional[QueryPlan] = None
+    cache_hit: Optional[bool] = None
+    usgs_params: Optional[Dict[str, Any]] = None
+
+    llm_ms = None
+    usgs_ms = None
+
+    try:
+        # --- LLM timing ---
+        t_llm0 = time.perf_counter()
+        plan = await llm_to_plan(payload.query)
+        llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+
+        usgs_params = plan_to_usgs_params(plan)
+
+        # --- USGS timing ---
+        t_usgs0 = time.perf_counter()
+        geo, cache_hit = await fetch_usgs(usgs_params)
+        usgs_ms = int((time.perf_counter() - t_usgs0) * 1000)
+
+        total_ms = int((time.perf_counter() - t0) * 1000)
+
+        stats = compute_stats(geo)
+
+        record.update({
+            "status": "success",
+            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+            "cache_hit": cache_hit,
+            "plan": plan.model_dump(),
+            "usgs_params": usgs_params,
+            "result": {"count": stats.get("count"), "max_magnitude": stats.get("max_magnitude")},
+        })
+        _append_jsonl(record)
+
+        return {
+            "plan": plan.model_dump(),
+            "request": {"url": USGS_EVENT_QUERY_URL, "params": usgs_params},
+            "geojson": geo,
+            "stats": stats,
+            "cache_hit": cache_hit,
+            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+        }
+
+    except HTTPException as e:
+        total_ms = int((time.perf_counter() - t0) * 1000)
+        record.update({
+            "status": "fail",
+            "http_status": e.status_code,
+            "error": str(e.detail),
+            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+            "cache_hit": cache_hit,
+            "plan": plan.model_dump() if plan else None,
+            "usgs_params": usgs_params,
+        })
+        _append_jsonl(record)
+        raise
+
+    except Exception as e:
+        total_ms = int((time.perf_counter() - t0) * 1000)
+        record.update({
+            "status": "fail",
+            "http_status": 500,
+            "error": f"Unexpected error: {e}",
+            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+            "cache_hit": cache_hit,
+            "plan": plan.model_dump() if plan else None,
+            "usgs_params": usgs_params,
+        })
+        _append_jsonl(record)
+        raise HTTPException(status_code=500, detail="Unexpected error")
