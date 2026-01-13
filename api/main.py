@@ -4,6 +4,7 @@ import json
 import os
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
 
 import httpx
@@ -11,111 +12,182 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-
-from pathlib import Path
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
 USGS_EVENT_QUERY_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
+# -----------------------------
+# Timezone
+# -----------------------------
+DEFAULT_TZ = "Asia/Shanghai"  # 东八区
+TZ_CST = ZoneInfo(DEFAULT_TZ)
+TZ_UTC = ZoneInfo("UTC")
 
 # -----------------------------
-# Simple in-memory cache for USGS responses
+# USGS in-memory cache (TTL)
 # -----------------------------
-# key -> (expire_ts, geojson_dict)
 _USGS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-
 USGS_CACHE_TTL_SECONDS = 300  # 5 minutes
-
 
 def _cache_key_from_params(params: Dict[str, Any]) -> str:
     return json.dumps(params, sort_keys=True, ensure_ascii=False)
-
 
 def _cache_get(key: str) -> Optional[Dict[str, Any]]:
     item = _USGS_CACHE.get(key)
     if not item:
         return None
-    expire_ts, value = item
-    if time.time() > expire_ts:
+    exp, val = item
+    if time.time() > exp:
         _USGS_CACHE.pop(key, None)
         return None
-    return value
+    return val
 
-
-def _cache_set(key: str, value: Dict[str, Any]) -> None:
-    _USGS_CACHE[key] = (time.time() + USGS_CACHE_TTL_SECONDS, value)
-
+def _cache_set(key: str, val: Dict[str, Any]) -> None:
+    _USGS_CACHE[key] = (time.time() + USGS_CACHE_TTL_SECONDS, val)
 
 def _cache_gc(max_items: int = 200) -> None:
     now = time.time()
     expired = [k for k, (exp, _) in _USGS_CACHE.items() if exp <= now]
     for k in expired:
         _USGS_CACHE.pop(k, None)
-
     if len(_USGS_CACHE) > max_items:
         for k in list(_USGS_CACHE.keys())[: len(_USGS_CACHE) - max_items]:
             _USGS_CACHE.pop(k, None)
 
+# -----------------------------
+# LLM plan in-memory cache
+# -----------------------------
+_LLM_PLAN_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+LLM_PLAN_TTL_SECONDS = 300  # 5 minutes
+
+def _llm_cache_get(key: str) -> Optional[Dict[str, Any]]:
+    item = _LLM_PLAN_CACHE.get(key)
+    if not item:
+        return None
+    exp, val = item
+    if time.time() > exp:
+        _LLM_PLAN_CACHE.pop(key, None)
+        return None
+    return val
+
+def _llm_cache_set(key: str, val: Dict[str, Any]) -> None:
+    _LLM_PLAN_CACHE[key] = (time.time() + LLM_PLAN_TTL_SECONDS, val)
 
 # -----------------------------
 # Logging (JSONL)
 # -----------------------------
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_FILE = LOG_DIR / "queries.jsonl"
-PROMPT_VERSION = "v1.0"   # 你每次改 prompt 就改一下这个版本号，方便论文对比
-APP_VERSION = "0.3.0"     # 你可以跟 FastAPI version 对齐
+PROMPT_VERSION = "v2.0-time-mag-range"
+APP_VERSION = "0.4.0"
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
 
 def _append_jsonl(record: Dict[str, Any]) -> None:
-    """
-    Append one JSON record per line.
-    Keep it robust: logging errors should not crash the API.
-    """
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         with LOG_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
-        # 不让日志写入失败影响接口正常返回
         pass
 
 # -----------------------------
 # App
 # -----------------------------
-app = FastAPI(title="Earthquake Agent API", version="0.3.0")
+app = FastAPI(title="Earthquake Agent API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 开发阶段先放开，后续可收紧
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 # -----------------------------
 # Helpers
 # -----------------------------
-def _validate_date_yyyy_mm_dd(s: str) -> None:
-    try:
-        datetime.strptime(s, "%Y-%m-%d")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid date: {s}, expected YYYY-MM-DD") from e
-
-
-def _clamp_int(v: int, lo: int, hi: int) -> int:
-    return max(lo, min(int(v), hi))
-
-
 def _extract_llm_content_openai_compat(resp_json: Dict[str, Any]) -> str:
     try:
         return resp_json["choices"][0]["message"]["content"]
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Unexpected LLM response: {json.dumps(resp_json)[:500]}") from e
 
+def _clamp_int(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(int(v), hi))
+
+def _clamp_float(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(float(v), hi))
+
+def _iso_utc(dt_utc: datetime) -> str:
+    # Ensure UTC with Z
+    dt_utc = dt_utc.astimezone(TZ_UTC)
+    return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
+    features = geojson.get("features")
+    count = len(features) if isinstance(features, list) else 0
+
+    mags = []
+    if isinstance(features, list):
+        for f in features:
+            p = f.get("properties") or {}
+            mag = p.get("mag")
+            if isinstance(mag, (int, float)):
+                mags.append(float(mag))
+
+    return {
+        "count": count,
+        "max_magnitude": max(mags) if mags else None,
+    }
+
+# -----------------------------
+# Magnitude phrase mapping (backend deterministic)
+# -----------------------------
+# 可以按需要调整阈值
+MAG_PHRASE_RULES: Dict[str, Tuple[Optional[float], Optional[float]]] = {
+    # very small / small
+    "微弱": (None, 3.0),
+    "很小": (None, 3.0),
+    "较小": (None, 4.0),
+    "小": (None, 4.0),
+
+    # medium / normal
+    "中等": (4.0, 6.0),
+    "一般": (3.0, 5.0),
+    "普通": (3.0, 5.0),
+
+    # large / strong
+    "较大": (5.0, None),
+    "大": (6.0, None),
+    "强": (6.0, None),
+    "很强": (7.0, None),
+    "巨大": (8.0, None),
+    "特大": (8.0, None),
+}
+
+def apply_mag_phrase(plan_min: Optional[float], plan_max: Optional[float], phrase: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
+    """
+    If min/max already set by user numeric constraints, we keep them.
+    If missing, we apply phrase defaults.
+    """
+    if not phrase:
+        return plan_min, plan_max
+
+    phrase = phrase.strip()
+    mapped = MAG_PHRASE_RULES.get(phrase)
+    if not mapped:
+        return plan_min, plan_max
+
+    m_min, m_max = mapped
+    if plan_min is None and m_min is not None:
+        plan_min = m_min
+    if plan_max is None and m_max is not None:
+        plan_max = m_max
+    return plan_min, plan_max
 
 # -----------------------------
 # Models
@@ -123,75 +195,228 @@ def _extract_llm_content_openai_compat(resp_json: Dict[str, Any]) -> str:
 class NLQueryIn(BaseModel):
     query: str = Field(min_length=1, max_length=500)
 
-
-class QueryPlan(BaseModel):
+class NLPlan(BaseModel):
     dataset: Literal["usgs_earthquakes"] = "usgs_earthquakes"
-    starttime: str  # YYYY-MM-DD
-    endtime: str  # YYYY-MM-DD
-    minmagnitude: float = 0.0
-    limit: int = 200
+
+    # Time window: let LLM output relative window only; backend computes absolute time.
+    window_unit: Literal["hours", "days"] = "days"
+    window_value: int = 7  # e.g., last 3 hours -> unit=hours, value=3
+
+    # Magnitude range: can be None
+    minmagnitude: Optional[float] = None
+    maxmagnitude: Optional[float] = None
+
+    # Optional phrase label for vague queries (backend maps it)
+    mag_phrase: Optional[str] = None  # e.g. "较小" / "较大" / "强" etc.
+
+    # --- 深度字段 (单位: km) ---
+    mindepth: Optional[float] = None
+    maxdepth: Optional[float] = None
+
+    # --- 新增：BBox 位置参数 ---
+    minlatitude: Optional[float] = None
+    maxlatitude: Optional[float] = None
+    minlongitude: Optional[float] = None
+    maxlongitude: Optional[float] = None
+
+    # Result control
+    limit: int = 100
     orderby: Literal["time", "magnitude"] = "time"
 
 
-def validate_plan(plan: QueryPlan) -> QueryPlan:
-    _validate_date_yyyy_mm_dd(plan.starttime)
-    _validate_date_yyyy_mm_dd(plan.endtime)
-
+def validate_plan(plan: NLPlan) -> NLPlan:
+    # 1. 时间窗口校验 (防止离谱的大数字)
+    plan.window_value = _clamp_int(plan.window_value, 1, 365*24 if plan.window_unit == "hours" else 365)
+    
+    # 2. 数量限制校验
     plan.limit = _clamp_int(plan.limit, 1, 500)
 
-    if plan.minmagnitude < 0:
-        plan.minmagnitude = 0.0
+    # 3. 震级范围归一化 (0-10)
+    if plan.minmagnitude is not None:
+        plan.minmagnitude = _clamp_float(plan.minmagnitude, 0.0, 10.0)
+    if plan.maxmagnitude is not None:
+        plan.maxmagnitude = _clamp_float(plan.maxmagnitude, 0.0, 10.0)
+
+    # 4. 震级交换 (防止 min > max)
+    if plan.minmagnitude is not None and plan.maxmagnitude is not None:
+        if plan.minmagnitude > plan.maxmagnitude:
+            plan.minmagnitude, plan.maxmagnitude = plan.maxmagnitude, plan.minmagnitude
+
+    # 5. 应用模糊震级词 (例如 "强震" -> min=6.0)
+    plan.minmagnitude, plan.maxmagnitude = apply_mag_phrase(plan.minmagnitude, plan.maxmagnitude, plan.mag_phrase)
+
+    # 6. 再次检查震级交换 (以防 apply_mag_phrase 导致倒挂)
+    if plan.minmagnitude is not None and plan.maxmagnitude is not None:
+        if plan.minmagnitude > plan.maxmagnitude:
+            plan.minmagnitude, plan.maxmagnitude = plan.maxmagnitude, plan.minmagnitude
+
+    # --- 新增部分开始 ---
+
+    # 7. BBox 经纬度校验
+    # 纬度必须在 -90 到 90 之间
+    if plan.minlatitude is not None: plan.minlatitude = _clamp_float(plan.minlatitude, -90, 90)
+    if plan.maxlatitude is not None: plan.maxlatitude = _clamp_float(plan.maxlatitude, -90, 90)
+    
+    # 经度必须在 -180 到 180 之间
+    if plan.minlongitude is not None: plan.minlongitude = _clamp_float(plan.minlongitude, -180, 180)
+    if plan.maxlongitude is not None: plan.maxlongitude = _clamp_float(plan.maxlongitude, -180, 180)
+    
+    # 8. 深度校验 (-10 到 1000 km)
+    if plan.mindepth is not None: plan.mindepth = _clamp_float(plan.mindepth, -10, 1000)
+    if plan.maxdepth is not None: plan.maxdepth = _clamp_float(plan.maxdepth, -10, 1000)
+
+    # --- 新增部分结束 ---
 
     return plan
 
 
-def plan_to_usgs_params(plan: QueryPlan) -> Dict[str, Any]:
-    return {
+def plan_to_usgs_params(plan: NLPlan) -> Dict[str, Any]:
+    # 1. 时间取整逻辑
+    _now = datetime.now(TZ_CST)
+    minutes_to_round = 5 
+    discard = timedelta(
+        minutes=_now.minute % minutes_to_round,
+        seconds=_now.second,
+        microseconds=_now.microsecond
+    )
+    now_cst = _now - discard
+
+    # 2. 计算 starttime / endtime
+    if plan.window_unit == "hours":
+        start_cst = now_cst - timedelta(hours=int(plan.window_value))
+    else:
+        start_cst = now_cst - timedelta(days=int(plan.window_value))
+
+    start_utc = start_cst.astimezone(TZ_UTC)
+    end_utc = now_cst.astimezone(TZ_UTC)
+
+    # 3. 初始化 params 字典
+    params: Dict[str, Any] = {
         "format": "geojson",
-        "starttime": plan.starttime,
-        "endtime": plan.endtime,
-        "minmagnitude": float(plan.minmagnitude),
+        "starttime": _iso_utc(start_utc),
+        "endtime": _iso_utc(end_utc),
         "limit": int(plan.limit),
         "orderby": plan.orderby,
     }
 
+    # 4. 震级参数
+    if plan.minmagnitude is not None:
+        params["minmagnitude"] = float(plan.minmagnitude)
+    if plan.maxmagnitude is not None:
+        params["maxmagnitude"] = float(plan.maxmagnitude)
 
-def build_prompt(nl: str, today: str) -> str:
+    # 5. [关键修复] BBox 参数
+    # 只要 4 个坐标都不是 None，就必须加进去！
+    has_bbox = (
+        plan.minlatitude is not None and
+        plan.maxlatitude is not None and
+        plan.minlongitude is not None and
+        plan.maxlongitude is not None
+    )
+    
+    if has_bbox:
+        params["minlatitude"] = float(plan.minlatitude)
+        params["maxlatitude"] = float(plan.maxlatitude)
+        params["minlongitude"] = float(plan.minlongitude)
+        params["maxlongitude"] = float(plan.maxlongitude)
+
+    # 6. 深度参数
+    if plan.mindepth is not None:
+        params["mindepth"] = float(plan.mindepth)
+    if plan.maxdepth is not None:
+        params["maxdepth"] = float(plan.maxdepth)
+
+    return params
+
+# -----------------------------
+# Prompt 
+# -----------------------------
+def build_prompt(nl: str, today_cst: str) -> str:
     return f"""
-今天日期是：{today}
+你是一个专业的地震查询助手。用户当前时间（东八区）是：{today_cst}
 
-你是一个地震查询助手。把用户的自然语言查询转换为“USGS 地震查询计划（Query Plan）”。
+请将用户的自然语言需求转换为 JSON 查询计划 (NLPlan)。
 
-你必须只输出“严格 JSON”（不要 Markdown，不要代码块，不要解释，不要多余文字），并完全符合下面 Schema：
+Schema:
 {{
   "dataset": "usgs_earthquakes",
-  "starttime": "YYYY-MM-DD",
-  "endtime": "YYYY-MM-DD",
-  "minmagnitude": number,
-  "limit": integer (1-500),
+  "window_unit": "hours" | "days",
+  "window_value": integer,
+  "minmagnitude": number | null,
+  "maxmagnitude": number | null,
+  "mag_phrase": string | null,
+  "minlatitude": number | null,
+  "maxlatitude": number | null,
+  "minlongitude": number | null,
+  "maxlongitude": number | null,
+  "mindepth": number | null,
+  "maxdepth": number | null,
+  "limit": integer,
   "orderby": "time" | "magnitude"
 }}
 
-规则：
-- 如果用户说“过去/最近N天”：endtime = 今天，starttime = 今天往前推 N 天。
-- 如果用户没有说明时间范围：默认最近 7 天（endtime=今天）。
-- 如果用户没有说明震级条件：minmagnitude=0。
-- 如果用户没有说明数量：limit=200。
-- 如果用户说“最大的/按震级排序/最高震级”：orderby="magnitude" 且 limit 取 50（除非用户明确指定数量）。
-- 否则 orderby="time"。
+【转换规则】
+1. **时间**：只输出相对时间窗口。
+   - "过去3小时" -> window_unit="hours", value=3
+   - 没说时间默认 "days", value=7。
 
-示例：
-用户：过去7天震级大于5的地震
-输出：{{"dataset":"usgs_earthquakes","starttime":"2025-12-27","endtime":"2026-01-03","minmagnitude":5,"limit":200,"orderby":"time"}}
+2. **震级**：
+   - 有具体数字优先用 min/maxmagnitude。
+   - 模糊形容词（如"较大"、"强震"）放入 mag_phrase，数字留 null。
 
-用户：最近30天最大的地震
-输出：{{"dataset":"usgs_earthquakes","starttime":"2025-12-04","endtime":"2026-01-03","minmagnitude":0,"limit":50,"orderby":"magnitude"}}
+3. **深度 (Depth)**：
+   - 单位公里(km)。
+   - "浅源" -> maxdepth=70
+   - "中源" -> mindepth=70, maxdepth=300
+   - "深源" -> mindepth=300
+
+4. **地理位置 (Bounding Box)**：
+   - 如果用户提到地名，请根据你的地理知识输出一个**矩形范围** (minlat, maxlat, minlon, maxlon)。
+   - **宁可范围稍微大一点，也不要漏掉数据**。
+   - [参考知识]：
+     - 中国: Lat 18~54, Lon 73~135
+     - 美国本土: Lat 24~50, Lon -125~-66
+     - 日本: Lat 30~46, Lon 128~146
+   - 如果没提地名或"全球"，位置字段全为 null。
+
+【完整示例】
+用户：过去24小时日本附近的浅源大地震
+输出：{{
+  "dataset": "usgs_earthquakes",
+  "window_unit": "hours", "window_value": 24,
+  "minmagnitude": null, "maxmagnitude": null, "mag_phrase": "大",
+  "minlatitude": 30.0, "maxlatitude": 46.0, "minlongitude": 128.0, "maxlongitude": 146.0,
+  "mindepth": null, "maxdepth": 70.0,
+  "limit": 100, "orderby": "magnitude"
+}}
+
+用户：查询最近7天加州深度大于10km的地震
+输出：{{
+  "dataset": "usgs_earthquakes",
+  "window_unit": "days", "window_value": 7,
+  "minmagnitude": null, "maxmagnitude": null, "mag_phrase": null,
+  "minlatitude": 32.0, "maxlatitude": 42.0, "minlongitude": -125.0, "maxlongitude": -114.0,
+  "mindepth": 10.0, "maxdepth": null,
+  "limit": 100, "orderby": "time"
+}}
+
+用户：过去3天全球大于5级的深源地震
+输出：{{
+  "dataset": "usgs_earthquakes",
+  "window_unit": "days", "window_value": 3,
+  "minmagnitude": 5.0, "maxmagnitude": null, "mag_phrase": null,
+  "minlatitude": null, "maxlatitude": null, "minlongitude": null, "maxlongitude": null,
+  "mindepth": 300.0, "maxdepth": null,
+  "limit": 100, "orderby": "time"
+}}
 
 现在用户问题：{nl}
 """.strip()
 
-
-async def llm_to_plan(nl: str) -> QueryPlan:
+# -----------------------------
+# LLM call
+# -----------------------------
+async def llm_to_plan(nl: str) -> Tuple[NLPlan, bool]:
     api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
     base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip()
     model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
@@ -201,8 +426,25 @@ async def llm_to_plan(nl: str) -> QueryPlan:
 
     llm_url = f"{base_url}/chat/completions"
 
-    today = date.today().isoformat()
-    prompt = build_prompt(nl, today)
+    now_cst = datetime.now(TZ_CST)
+    today_cst = now_cst.strftime("%Y-%m-%d %H:%M:%S")
+
+    prompt = build_prompt(nl, today_cst)
+
+    # ---------- LLM cache key ----------
+    cache_key_obj = {
+        "q": nl,
+        "today_date": today_cst.split(" ")[0],  # 只用日期部分，避免同一天内缓存失效
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+    }
+    cache_key = json.dumps(cache_key_obj, sort_keys=True, ensure_ascii=False)
+
+    cached = _llm_cache_get(cache_key)
+    if cached is not None:
+        # 从缓存还原 NLPlan
+        return validate_plan(NLPlan(**cached)), True
+    # -----------------------------------
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -226,13 +468,16 @@ async def llm_to_plan(nl: str) -> QueryPlan:
 
     content1 = _extract_llm_content_openai_compat(j1)
 
-    def _parse_plan(content: str) -> QueryPlan:
+    def _parse_plan(content: str) -> NLPlan:
         obj = json.loads(content)
-        plan = QueryPlan(**obj)
+        plan = NLPlan(**obj)
         return validate_plan(plan)
 
     try:
-        return _parse_plan(content1)
+        plan = _parse_plan(content1)
+        # 写入缓存
+        _llm_cache_set(cache_key, plan.model_dump())
+        return plan, False
     except Exception as e1:
         repair_prompt = (
             "你的输出不符合要求。你必须只输出严格 JSON，且符合 Schema。\n"
@@ -240,7 +485,6 @@ async def llm_to_plan(nl: str) -> QueryPlan:
             f"你的上一次输出：{content1}\n"
             "请只输出修正后的 JSON："
         )
-
         body2 = {
             "model": model,
             "temperature": 0,
@@ -251,7 +495,6 @@ async def llm_to_plan(nl: str) -> QueryPlan:
                 {"role": "user", "content": repair_prompt},
             ],
         }
-
         async with httpx.AsyncClient(timeout=30.0) as client:
             r2 = await client.post(llm_url, headers=headers, json=body2)
             if r2.status_code != 200:
@@ -260,21 +503,20 @@ async def llm_to_plan(nl: str) -> QueryPlan:
 
         content2 = _extract_llm_content_openai_compat(j2)
         try:
-            return _parse_plan(content2)
+            plan = _parse_plan(content2)
+            _llm_cache_set(cache_key, plan.model_dump())
+            return plan, False
         except Exception as e2:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to parse QueryPlan from LLM after repair. error={e2}; content={content2[:200]}",
+                detail=f"Failed to parse NLPlan from LLM after repair. error={e2}; content={content2[:200]}",
             ) from e2
 
-
+# -----------------------------
+# USGS fetch (with cache)
+# -----------------------------
 async def fetch_usgs(params: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-    """
-    Fetch USGS GeoJSON with in-memory cache.
-    Returns: (geojson, cache_hit)
-    """
     _cache_gc()
-
     key = _cache_key_from_params(params)
     cached = _cache_get(key)
     if cached is not None:
@@ -301,25 +543,6 @@ async def fetch_usgs(params: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     _cache_set(key, data)
     return data, False
 
-
-def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
-    features = geojson.get("features")
-    count = len(features) if isinstance(features, list) else 0
-
-    mags = []
-    if isinstance(features, list):
-        for f in features:
-            p = f.get("properties") or {}
-            mag = p.get("mag")
-            if isinstance(mag, (int, float)):
-                mags.append(float(mag))
-
-    return {
-        "count": count,
-        "max_magnitude": max(mags) if mags else None,
-    }
-
-
 # -----------------------------
 # Routes
 # -----------------------------
@@ -327,59 +550,10 @@ def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
 def health() -> Dict[str, str]:
     return {"status": "ok"}
 
-
-@app.get("/api/usgs-test")
-async def usgs_test() -> Dict[str, Any]:
-    today = date.today()
-    start = today - timedelta(days=7)
-
-    params = {
-        "format": "geojson",
-        "starttime": start.isoformat(),
-        "endtime": today.isoformat(),
-        "minmagnitude": 4.5,
-        "limit": 100,
-        "orderby": "time",
-    }
-
-    geo, cache_hit = await fetch_usgs(params)
-    return {
-        "source": "usgs",
-        "request": {"url": USGS_EVENT_QUERY_URL, "params": params},
-        "geojson": geo,
-        "cache_hit": cache_hit,
-    }
-
-
-@app.get("/api/query-usgs")
-async def query_usgs(
-    starttime: str = Query(..., description="YYYY-MM-DD"),
-    endtime: str = Query(..., description="YYYY-MM-DD"),
-    minmagnitude: float = Query(0.0, ge=0.0),
-    limit: int = Query(200, ge=1, le=500),
-    orderby: str = Query("time", pattern="^(time|magnitude)$"),
-) -> Dict[str, Any]:
-    _validate_date_yyyy_mm_dd(starttime)
-    _validate_date_yyyy_mm_dd(endtime)
-
-    params = {
-        "format": "geojson",
-        "starttime": starttime,
-        "endtime": endtime,
-        "minmagnitude": float(minmagnitude),
-        "limit": int(limit),
-        "orderby": orderby,
-    }
-
-    geo, cache_hit = await fetch_usgs(params)
-    return {
-        "source": "usgs",
-        "request": {"url": USGS_EVENT_QUERY_URL, "params": params},
-        "geojson": geo,
-        "stats": compute_stats(geo),
-        "cache_hit": cache_hit,
-    }
-
+@app.post("/api/cache/clear")
+def cache_clear() -> Dict[str, Any]:
+    _USGS_CACHE.clear()
+    return {"ok": True, "cache_size": 0}
 
 @app.post("/api/nl-query")
 async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
@@ -392,36 +566,41 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
         "prompt_version": PROMPT_VERSION,
         "status": "unknown",
         "user_query": payload.query,
+        "timezone": DEFAULT_TZ,
     }
 
-    plan: Optional[QueryPlan] = None
+    llm_ms: Optional[int] = None
+    usgs_ms: Optional[int] = None
     cache_hit: Optional[bool] = None
+    llm_cache_hit: Optional[bool] = None
+    plan: Optional[NLPlan] = None
     usgs_params: Optional[Dict[str, Any]] = None
 
-    llm_ms = None
-    usgs_ms = None
-
     try:
-        # --- LLM timing ---
+        # LLM timing + cache
         t_llm0 = time.perf_counter()
-        plan = await llm_to_plan(payload.query)
-        llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+        plan, llm_cache_hit = await llm_to_plan(payload.query)
+        if llm_cache_hit:
+            llm_ms = 0
+        else:
+            llm_ms = int((time.perf_counter() - t_llm0) * 1000)
 
+        # Backend computes absolute times in UTC ISO
         usgs_params = plan_to_usgs_params(plan)
 
-        # --- USGS timing ---
+        # USGS timing
         t_usgs0 = time.perf_counter()
         geo, cache_hit = await fetch_usgs(usgs_params)
         usgs_ms = int((time.perf_counter() - t_usgs0) * 1000)
 
         total_ms = int((time.perf_counter() - t0) * 1000)
-
         stats = compute_stats(geo)
 
         record.update({
             "status": "success",
             "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
             "cache_hit": cache_hit,
+            "llm_cache_hit": llm_cache_hit,
             "plan": plan.model_dump(),
             "usgs_params": usgs_params,
             "result": {"count": stats.get("count"), "max_magnitude": stats.get("max_magnitude")},
@@ -434,6 +613,7 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
             "geojson": geo,
             "stats": stats,
             "cache_hit": cache_hit,
+            "llm_cache_hit": llm_cache_hit,
             "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
         }
 
@@ -445,6 +625,7 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
             "error": str(e.detail),
             "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
             "cache_hit": cache_hit,
+            "llm_cache_hit": llm_cache_hit,
             "plan": plan.model_dump() if plan else None,
             "usgs_params": usgs_params,
         })
@@ -456,9 +637,10 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
         record.update({
             "status": "fail",
             "http_status": 500,
-            "error": f"Unexpected error: {e}",
+            "error": f"Unexpected error: {str(e)}",
             "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
             "cache_hit": cache_hit,
+            "llm_cache_hit": llm_cache_hit,
             "plan": plan.model_dump() if plan else None,
             "usgs_params": usgs_params,
         })
