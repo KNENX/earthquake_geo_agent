@@ -196,11 +196,16 @@ class NLQueryIn(BaseModel):
     query: str = Field(min_length=1, max_length=500)
 
 class NLPlan(BaseModel):
-    dataset: Literal["usgs_earthquakes"] = "usgs_earthquakes"
 
-    # Time window: let LLM output relative window only; backend computes absolute time.
-    window_unit: Literal["hours", "days"] = "days"
-    window_value: int = 7  # e.g., last 3 hours -> unit=hours, value=3
+    # --- [修改点 1] 时间模式升级 ---
+    # 模式 A: 相对时间 (例如: 过去 7 天)
+    window_unit: Optional[Literal["hours", "days"]] = None 
+    window_value: Optional[int] = None
+
+    # 模式 B: 绝对时间 (例如: 2008-05-12)
+    # 格式: "YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM:SS"
+    starttime: Optional[str] = None
+    endtime: Optional[str] = None
 
     # Magnitude range: can be None
     minmagnitude: Optional[float] = None
@@ -225,9 +230,24 @@ class NLPlan(BaseModel):
 
 
 def validate_plan(plan: NLPlan) -> NLPlan:
-    # 1. 时间窗口校验 (防止离谱的大数字)
-    plan.window_value = _clamp_int(plan.window_value, 1, 365*24 if plan.window_unit == "hours" else 365)
+    # --- 1. 时间逻辑校验 (大幅升级) ---
     
+    # 如果是相对时间模式 (window_value 存在)
+    if plan.window_value is not None:
+        # 解除 365 天的封印，改为允许查 100 年 (36500天)
+        max_days = 36500 
+        # 根据单位计算最大值
+        limit_val = max_days * 24 if plan.window_unit == "hours" else max_days
+        
+        # 钳制数值 (最小1，最大100年)
+        plan.window_value = _clamp_int(plan.window_value, 1, limit_val)
+
+    # 如果既没有相对时间，也没有绝对时间，则默认查过去 7 天
+    if plan.window_value is None and plan.starttime is None:
+        plan.window_unit = "days"
+        plan.window_value = 7
+    # -------------------------------
+
     # 2. 数量限制校验
     plan.limit = _clamp_int(plan.limit, 1, 500)
 
@@ -237,94 +257,117 @@ def validate_plan(plan: NLPlan) -> NLPlan:
     if plan.maxmagnitude is not None:
         plan.maxmagnitude = _clamp_float(plan.maxmagnitude, 0.0, 10.0)
 
-    # 4. 震级交换 (防止 min > max)
+    # 4. 震级交换
     if plan.minmagnitude is not None and plan.maxmagnitude is not None:
         if plan.minmagnitude > plan.maxmagnitude:
             plan.minmagnitude, plan.maxmagnitude = plan.maxmagnitude, plan.minmagnitude
 
-    # 5. 应用模糊震级词 (例如 "强震" -> min=6.0)
+    # 5. 应用模糊震级词
     plan.minmagnitude, plan.maxmagnitude = apply_mag_phrase(plan.minmagnitude, plan.maxmagnitude, plan.mag_phrase)
-
-    # 6. 再次检查震级交换 (以防 apply_mag_phrase 导致倒挂)
+    
+    # 6. 再次检查震级交换
     if plan.minmagnitude is not None and plan.maxmagnitude is not None:
         if plan.minmagnitude > plan.maxmagnitude:
             plan.minmagnitude, plan.maxmagnitude = plan.maxmagnitude, plan.minmagnitude
 
-    # --- 新增部分开始 ---
-
-    # 7. BBox 经纬度校验
-    # 纬度必须在 -90 到 90 之间
+    # 7. BBox 校验
     if plan.minlatitude is not None: plan.minlatitude = _clamp_float(plan.minlatitude, -90, 90)
     if plan.maxlatitude is not None: plan.maxlatitude = _clamp_float(plan.maxlatitude, -90, 90)
-    
-    # 经度必须在 -180 到 180 之间
     if plan.minlongitude is not None: plan.minlongitude = _clamp_float(plan.minlongitude, -180, 180)
     if plan.maxlongitude is not None: plan.maxlongitude = _clamp_float(plan.maxlongitude, -180, 180)
     
-    # 8. 深度校验 (-10 到 1000 km)
+    # 8. 深度校验
     if plan.mindepth is not None: plan.mindepth = _clamp_float(plan.mindepth, -10, 1000)
     if plan.maxdepth is not None: plan.maxdepth = _clamp_float(plan.maxdepth, -10, 1000)
-
-    # --- 新增部分结束 ---
 
     return plan
 
 
 def plan_to_usgs_params(plan: NLPlan) -> Dict[str, Any]:
-    # 1. 时间取整逻辑
-    _now = datetime.now(TZ_CST)
-    minutes_to_round = 5 
-    discard = timedelta(
-        minutes=_now.minute % minutes_to_round,
-        seconds=_now.second,
-        microseconds=_now.microsecond
-    )
-    now_cst = _now - discard
-
-    # 2. 计算 starttime / endtime
-    if plan.window_unit == "hours":
-        start_cst = now_cst - timedelta(hours=int(plan.window_value))
-    else:
-        start_cst = now_cst - timedelta(days=int(plan.window_value))
-
-    start_utc = start_cst.astimezone(TZ_UTC)
-    end_utc = now_cst.astimezone(TZ_UTC)
-
-    # 3. 初始化 params 字典
+    # 初始化基础参数
     params: Dict[str, Any] = {
         "format": "geojson",
-        "starttime": _iso_utc(start_utc),
-        "endtime": _iso_utc(end_utc),
         "limit": int(plan.limit),
         "orderby": plan.orderby,
     }
 
-    # 4. 震级参数
-    if plan.minmagnitude is not None:
-        params["minmagnitude"] = float(plan.minmagnitude)
-    if plan.maxmagnitude is not None:
-        params["maxmagnitude"] = float(plan.maxmagnitude)
-
-    # 5. [关键修复] BBox 参数
-    # 只要 4 个坐标都不是 None，就必须加进去！
-    has_bbox = (
-        plan.minlatitude is not None and
-        plan.maxlatitude is not None and
-        plan.minlongitude is not None and
-        plan.maxlongitude is not None
-    )
+    # --- 1. 时间逻辑 (修复空指针异常) ---
     
-    if has_bbox:
+    # 分支 A: 绝对时间 (starttime 存在)
+    if plan.starttime:
+        s_t = plan.starttime.strip()
+        e_t = plan.endtime.strip() if plan.endtime else None
+
+        # 补全格式
+        if "T" not in s_t: s_t += "T00:00:00"
+        if "Z" not in s_t: s_t += "Z"
+        
+        if not e_t:
+             e_t = _now_iso() # 默认到现在
+        else:
+             if "T" not in e_t: e_t += "T23:59:59"
+             if "Z" not in e_t: e_t += "Z"
+
+        params["starttime"] = s_t
+        params["endtime"] = e_t
+
+    # 分支 B: 相对时间 (window_value 存在)
+    elif plan.window_value is not None:
+        # 只有在 window_value 不为 None 时才执行这里的逻辑
+        
+        # 时间取整缓存优化
+        _now = datetime.now(TZ_CST)
+        minutes_to_round = 5 
+        discard = timedelta(
+            minutes=_now.minute % minutes_to_round,
+            seconds=_now.second,
+            microseconds=_now.microsecond
+        )
+        now_cst = _now - discard
+
+        # 安全转换 int (其实 validate_plan 已经保证了，但再防一手)
+        val = int(plan.window_value)
+
+        if plan.window_unit == "hours":
+            start_cst = now_cst - timedelta(hours=val)
+        else:
+            # 默认为 days
+            start_cst = now_cst - timedelta(days=val)
+
+        start_utc = start_cst.astimezone(TZ_UTC)
+        end_utc = now_cst.astimezone(TZ_UTC)
+        
+        params["starttime"] = _iso_utc(start_utc)
+        params["endtime"] = _iso_utc(end_utc)
+
+    # 分支 C: 兜底 (既没绝对时间也没相对时间)
+    else:
+        # 默认查过去 7 天
+        _now = datetime.now(TZ_CST)
+        start_cst = _now - timedelta(days=7)
+        params["starttime"] = _iso_utc(start_cst.astimezone(TZ_UTC))
+        params["endtime"] = _iso_utc(_now.astimezone(TZ_UTC))
+
+    # -----------------------------
+
+    # 2. 震级
+    if plan.minmagnitude is not None: params["minmagnitude"] = float(plan.minmagnitude)
+    if plan.maxmagnitude is not None: params["maxmagnitude"] = float(plan.maxmagnitude)
+
+    # 3. 地点 (BBox) - 只有 4 个都不为 None 才加
+    if (plan.minlatitude is not None and 
+        plan.maxlatitude is not None and 
+        plan.minlongitude is not None and 
+        plan.maxlongitude is not None):
+        
         params["minlatitude"] = float(plan.minlatitude)
         params["maxlatitude"] = float(plan.maxlatitude)
         params["minlongitude"] = float(plan.minlongitude)
         params["maxlongitude"] = float(plan.maxlongitude)
 
-    # 6. 深度参数
-    if plan.mindepth is not None:
-        params["mindepth"] = float(plan.mindepth)
-    if plan.maxdepth is not None:
-        params["maxdepth"] = float(plan.maxdepth)
+    # 4. 深度
+    if plan.mindepth is not None: params["mindepth"] = float(plan.mindepth)
+    if plan.maxdepth is not None: params["maxdepth"] = float(plan.maxdepth)
 
     return params
 
@@ -332,82 +375,99 @@ def plan_to_usgs_params(plan: NLPlan) -> Dict[str, Any]:
 # Prompt 
 # -----------------------------
 def build_prompt(nl: str, today_cst: str) -> str:
+    # 提取年份，辅助 LLM 更好地理解相对/绝对时间
+    current_year = today_cst.split("-")[0]
+
     return f"""
-你是一个专业的地震查询助手。用户当前时间（东八区）是：{today_cst}
+你是一个专业的地震查询助手。
+当前时间（东八区）：{today_cst}
+当前年份：{current_year}
 
 请将用户的自然语言需求转换为 JSON 查询计划 (NLPlan)。
 
 Schema:
 {{
   "dataset": "usgs_earthquakes",
-  "window_unit": "hours" | "days",
-  "window_value": integer,
+  
+  // 【时间模式二选一】
+  // 模式A：相对时间
+  "window_unit": "hours" | "days" | null,
+  "window_value": integer | null,
+  // 模式B：绝对时间 (YYYY-MM-DD)
+  "starttime": string | null,
+  "endtime": string | null,
+
   "minmagnitude": number | null,
   "maxmagnitude": number | null,
   "mag_phrase": string | null,
+  
   "minlatitude": number | null,
   "maxlatitude": number | null,
   "minlongitude": number | null,
   "maxlongitude": number | null,
+  
   "mindepth": number | null,
   "maxdepth": number | null,
-  "limit": integer,
+  
+  "limit": integer, // 默认 100
   "orderby": "time" | "magnitude"
 }}
 
-【转换规则】
-1. **时间**：只输出相对时间窗口。
-   - "过去3小时" -> window_unit="hours", value=3
-   - 没说时间默认 "days", value=7。
+【处理规则 (严格执行)】
 
-2. **震级**：
-   - 有具体数字优先用 min/maxmagnitude。
-   - 模糊形容词（如"较大"、"强震"）放入 mag_phrase，数字留 null。
+1. **时间处理**:
+   - **相对时间**: 
+     - "过去3天" -> window_unit="days", window_value=3
+     - "过去24小时" -> window_unit="hours", window_value=24
+     - **重要**: "过去N年" -> window_unit="days", window_value=N*365 (例如 10年 -> 3650)
+   - **绝对时间**:
+     - 优先使用 starttime/endtime。
+     - "2011年" -> start="2011-01-01", end="2011-12-31"
+     - "2023年3月" -> start="2023-03-01", end="2023-03-31"
+     - "2008年5月12日" -> start="2008-05-12", end="2008-05-13" (跨度1天)
+   - **历史事件补全**:
+     - 如果用户提到著名地震但没说时间，请根据知识库补全时间。
+     - "汶川地震" -> start="2008-05-12", end="2008-05-13"
+     - "唐山地震" -> start="1976-07-28", end="1976-07-29"
+     - "日本311地震" -> start="2011-03-11", end="2011-03-12"
 
-3. **深度 (Depth)**：
-   - 单位公里(km)。
-   - "浅源" -> maxdepth=70
-   - "中源" -> mindepth=70, maxdepth=300
-   - "深源" -> mindepth=300
-
-4. **地理位置 (Bounding Box)**：
-   - 如果用户提到地名，请根据你的地理知识输出一个**矩形范围** (minlat, maxlat, minlon, maxlon)。
-   - **宁可范围稍微大一点，也不要漏掉数据**。
-   - [参考知识]：
+2. **地理位置 (Bounding Box)**:
+   - 根据地名输出矩形范围 (minlat, maxlat, minlon, maxlon)。
+   - **参考坐标库**:
      - 中国: Lat 18~54, Lon 73~135
+     - 汶川/四川: Lat 30~33, Lon 102~106
      - 美国本土: Lat 24~50, Lon -125~-66
+     - 加州: Lat 32~42, Lon -125~-114
      - 日本: Lat 30~46, Lon 128~146
-   - 如果没提地名或"全球"，位置字段全为 null。
+     - 土耳其: Lat 35~42, Lon 26~45
+   - 若无地名则全为 null。
+
+3. **震级与深度**:
+   - 震级: "大地震" -> mag_phrase="大"; "5级以上" -> minmagnitude=5.0
+   - 深度: "浅源" -> maxdepth=70; "深源" -> mindepth=300
 
 【完整示例】
-用户：过去24小时日本附近的浅源大地震
-输出：{{
-  "dataset": "usgs_earthquakes",
-  "window_unit": "hours", "window_value": 24,
-  "minmagnitude": null, "maxmagnitude": null, "mag_phrase": "大",
+
+User: 过去10年全球8级大地震
+JSON: {{
+  "window_unit": "days", "window_value": 3650,
+  "minmagnitude": 8.0,
+  "limit": 100, "orderby": "time"
+}}
+
+User: 2008年汶川地震
+JSON: {{
+  "starttime": "2008-05-12", "endtime": "2008-05-13",
+  "minlatitude": 30.5, "maxlatitude": 32.0, "minlongitude": 103.0, "maxlongitude": 105.0,
+  "minmagnitude": 6.0,
+  "limit": 50
+}}
+
+User: 去年日本所有的有感地震
+JSON: {{
+  "starttime": "{int(current_year)-1}-01-01", "endtime": "{int(current_year)-1}-12-31",
   "minlatitude": 30.0, "maxlatitude": 46.0, "minlongitude": 128.0, "maxlongitude": 146.0,
-  "mindepth": null, "maxdepth": 70.0,
-  "limit": 100, "orderby": "magnitude"
-}}
-
-用户：查询最近7天加州深度大于10km的地震
-输出：{{
-  "dataset": "usgs_earthquakes",
-  "window_unit": "days", "window_value": 7,
-  "minmagnitude": null, "maxmagnitude": null, "mag_phrase": null,
-  "minlatitude": 32.0, "maxlatitude": 42.0, "minlongitude": -125.0, "maxlongitude": -114.0,
-  "mindepth": 10.0, "maxdepth": null,
-  "limit": 100, "orderby": "time"
-}}
-
-用户：过去3天全球大于5级的深源地震
-输出：{{
-  "dataset": "usgs_earthquakes",
-  "window_unit": "days", "window_value": 3,
-  "minmagnitude": 5.0, "maxmagnitude": null, "mag_phrase": null,
-  "minlatitude": null, "maxlatitude": null, "minlongitude": null, "maxlongitude": null,
-  "mindepth": 300.0, "maxdepth": null,
-  "limit": 100, "orderby": "time"
+  "minmagnitude": 4.0
 }}
 
 现在用户问题：{nl}

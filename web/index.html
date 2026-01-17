@@ -1,31 +1,57 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Earthquake AI Agent</title>
+    <!-- 引入 Google Fonts 提升质感 -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <!-- 地图容器 (全屏) -->
+    <div id="map"></div>
 
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Earthquake Agent</title>
+<!-- 修改搜索栏部分 -->
+<div id="search-container">
+  <div class="input-group">
+    <input type="text" id="nl" placeholder="例如：最近7天日本的大地震..." />
+    
+    <!-- 新增：定位按钮 -->
+    <button id="btn-locate" title="查询我附近的地震" style="margin-right: 2px;">
+      📍
+    </button>
 
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-</head>
+    <button id="run-nl">
+      <span id="btn-text">查询</span>
+      <span id="btn-loader" class="loader hidden"></span>
+    </button>
+  </div>
+</div>
 
-<body>
-  <div id="app">
-    <div id="panel">
-      <div style="font-weight:600;margin-bottom:8px">Natural Language Query</div>
+<!-- 修改 Info 面板部分 -->
+<div id="info-panel" class="hidden">
+  <button id="close-info" title="关闭">×</button>
+  <div id="info-content"></div>
+  
+  <!-- 新增：列表容器 -->
+  <hr class="info-hr">
+  <div id="quake-list-container" class="hidden">
+    <h5 style="margin:5px 0">地震列表 (Top 50)</h5>
+    <ul id="quake-list" style="list-style:none; padding:0; margin:0; max-height:200px; overflow-y:auto;">
+      <!-- JS 动态填充 -->
+    </ul>
+  </div>
+  <button id="toggle-list" style="width:100%; margin-top:10px; cursor:pointer; background:#f0f0f0; border:none; padding:5px; border-radius:4px;">
+    展开详细列表 ▼
+  </button>
+</div>
 
-      <input id="nl" placeholder="例如：过去7天震级大于5的地震" />
-
-      <button id="run-nl">查询</button>
-
-      <pre id="info"></pre>
+    <!-- 悬浮信息面板 (左下角) -->
+    <div id="info-panel" class="hidden">
+      <button id="close-info" title="关闭">×</button>
+      <div id="info-content"></div>
     </div>
 
-    <div id="map"></div>
-  </div>
-
-  <script type="module" src="/src/main.js"></script>
-</body>
-
+    <script type="module" src="/src/main.js"></script>
+  </body>
 </html>

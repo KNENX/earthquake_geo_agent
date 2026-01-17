@@ -1,54 +1,206 @@
-html, body {
-  height: 100%;
+/* 全局重置 */
+body, html {
   margin: 0;
-}
-
-#app {
-  height: 100%;
-}
-
-#map {
+  padding: 0;
   height: 100%;
   width: 100%;
+  font-family: 'Roboto', sans-serif;
+  overflow: hidden; /* 防止滚动 */
 }
 
-#panel{
-  position:absolute;
-  z-index:1000;
-  top:12px;
-  left:12px;
-  width:320px;
-  background:rgba(255,255,255,0.95);
-  padding:10px;
-  border-radius:8px;
-  box-shadow:0 2px 10px rgba(0,0,0,0.15);
+/* 全屏地图 */
+#map {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+/* === 悬浮搜索栏 (类似 Google Maps 顶部搜索) === */
+#search-container {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000; /* 保证在地图上面 */
+  width: 90%;
+  max-width: 500px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  padding: 5px;
+}
+
+.input-group {
+  display: flex;
+  align-items: center;
+}
+
+#nl {
+  flex: 1;
+  border: none;
+  padding: 12px 15px;
+  font-size: 16px;
+  outline: none;
+  border-radius: 8px 0 0 8px;
+}
+
+#run-nl {
+  background: #4285F4; /* 谷歌蓝 */
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 0 8px 8px 0;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 80px;
+  justify-content: center;
+}
+
+#run-nl:hover {
+  background: #3367D6;
+}
+
+#run-nl:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+/* === 悬浮信息面板 (左下角卡片) === */
+#info-panel {
+  position: absolute;
+  bottom: 30px;
+  left: 20px;
+  z-index: 1000;
+  width: 320px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(5px);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  padding: 15px;
+  font-size: 14px;
+  max-height: 60%;
+  overflow-y: auto;
+  transition: opacity 0.3s;
+}
+
+#info-panel.hidden {
+  display: none;
+}
+
+#close-info {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: #666;
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* === Loading 动画 (小转圈) === */
+.loader {
+  border: 3px solid rgba(255,255,255,0.3);
+  border-radius: 50%;
+  border-top: 3px solid white;
+  width: 16px;
+  height: 16px;
+  animation: spin 1s linear infinite;
+}
+
+.loader.hidden {
+  display: none;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Leaflet 控件位置微调 */
+.leaflet-top.leaflet-left {
+  top: 80px; /* 避开顶部的搜索栏 */
+}
+
+/* Info Panel 内部排版样式 */
+.info-title {
+  margin: 0 0 8px 0;
+  color: #444;
+  font-weight: 700;
+}
+.info-list {
+  margin: 0;
+  padding-left: 20px;
+  line-height: 1.6;
+  color: #555;
+}
+.info-hr {
+  border: 0;
+  border-top: 1px solid #ddd;
+  margin: 10px 0;
+}
+.info-stats {
+  margin-bottom: 5px;
+  color: #333;
+}
+.info-footer {
+  color: #777;
+  font-size: 0.85em;
+  margin-top: 5px;
+}
+
+/* 定位按钮样式 */
+#btn-locate {
+  background: white;
+  border: 1px solid #ddd;
+  border-right: none;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 10px 12px;
+  transition: background 0.2s;
+  color: #666;
+}
+#btn-locate:hover {
+  background: #f5f5f5;
+  color: #4285F4;
+}
+
+/* 列表样式 */
+.quake-item {
+  padding: 6px 4px;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
   font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+}
+.quake-item:hover {
+  background-color: #f9f9f9;
+}
+.quake-mag {
+  font-weight: bold;
+  color: #d63031;
+  min-width: 35px;
+}
+.quake-place {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  margin-right: 5px;
+}
+.quake-time {
+  color: #999;
+  font-size: 11px;
 }
 
-#panel label{
-  display:block;
-  margin-top:8px;
-  margin-bottom:4px;
-  color:#333;
-}
-
-#panel input{
-  width:100%;
-  box-sizing:border-box;
-  padding:8px;
-}
-
-#panel button{
-  width:100%;
-  margin-top:10px;
-  padding:8px;
-}
-
-#info{
-  margin-top:10px;
-  max-height:160px;
-  overflow:auto;
-  font-size:12px;
-  background:#f6f6f6;
-  padding:8px;
+/* Info 面板里的隐藏类 */
+#quake-list-container.hidden {
+  display: none;
 }
