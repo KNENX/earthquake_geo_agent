@@ -31,7 +31,7 @@ const map = L.map("map", {
   center: [20, 0],
   zoom: 2,
   layers: [osm],
-  zoomControl: false 
+  zoomControl: false
 });
 
 L.control.zoom({ position: 'bottomright' }).addTo(map);
@@ -139,7 +139,7 @@ function renderGeoJSON(geojson, plan) {
       [plan.minlatitude, plan.minlongitude],
       [plan.maxlatitude, plan.maxlongitude],
     ];
-    
+
     bboxLayer = L.rectangle(bounds, {
       color: "#ff3333",
       weight: 2,
@@ -153,7 +153,7 @@ function renderGeoJSON(geojson, plan) {
       if (earthquakeLayer.getLayers().length > 0) {
         map.fitBounds(earthquakeLayer.getBounds().pad(0.1));
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 }
 
@@ -162,7 +162,7 @@ function setLoading(isLoading) {
   const btnText = document.getElementById("btn-text");
   const btnLoader = document.getElementById("btn-loader");
   const btn = document.getElementById("run-nl");
-  
+
   if (isLoading) {
     btn.disabled = true;
     btnText.textContent = "AI思考中";
@@ -185,11 +185,11 @@ function updateInfoPanel(payload) {
 
   let timeStr = "";
   if (plan.starttime) {
-    const start = plan.starttime.split("T")[0]; 
+    const start = plan.starttime.split("T")[0];
     const end = plan.endtime ? plan.endtime.split("T")[0] : "现在";
     timeStr = `${start} 至 ${end}`;
   } else {
-    const val = plan.window_value || "?"; 
+    const val = plan.window_value || "?";
     const unit = plan.window_unit === 'hours' ? '小时' : '天';
     timeStr = `过去 ${val} ${unit}`;
   }
@@ -218,7 +218,7 @@ function updateInfoPanel(payload) {
   `;
 
   currentFeatures = payload.geojson.features || [];
-  
+
   const listContainer = document.getElementById("quake-list-container");
   const toggleBtn = document.getElementById("toggle-list");
 
@@ -226,7 +226,7 @@ function updateInfoPanel(payload) {
     listContainer.classList.add("hidden");
     toggleBtn.textContent = "展开详细列表 ▼";
     toggleBtn.style.display = currentFeatures.length > 0 ? "block" : "none";
-    renderList(currentFeatures.slice(0, 50)); 
+    renderList(currentFeatures.slice(0, 50));
   }
 }
 
@@ -235,7 +235,7 @@ function renderList(features) {
   const list = document.getElementById("quake-list");
   if (!list) return;
   list.innerHTML = "";
-  
+
   features.forEach(f => {
     const p = f.properties;
     const coords = f.geometry.coordinates;
@@ -275,13 +275,79 @@ if (toggleBtn) {
   });
 }
 
-// 3. 核心查询函数
+// --- 聊天功能 ---
+function addChatMessage(role, content, isMapResult = false) {
+  const messages = document.getElementById("chat-messages");
+  const bubble = document.createElement("div");
+
+  if (isMapResult) {
+    bubble.className = "chat-bubble chat-map-result";
+  } else if (role === "user") {
+    bubble.className = "chat-bubble chat-user";
+  } else {
+    bubble.className = "chat-bubble chat-ai";
+  }
+
+  // Convert markdown-style formatting and line breaks
+  const formattedContent = content
+    .replace(/\n/g, "<br>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.*?)\*/g, "<em>$1</em>");
+
+  bubble.innerHTML = `<div class="bubble-content">${formattedContent}</div>`;
+  messages.appendChild(bubble);
+
+  // Scroll to bottom
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function showChatLoading() {
+  const messages = document.getElementById("chat-messages");
+  const loader = document.createElement("div");
+  loader.id = "chat-loader";
+  loader.className = "chat-bubble chat-ai";
+  loader.innerHTML = `
+    <div class="chat-loading">
+      <span></span><span></span><span></span>
+    </div>
+  `;
+  messages.appendChild(loader);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function hideChatLoading() {
+  const loader = document.getElementById("chat-loader");
+  if (loader) loader.remove();
+}
+
+function ensureChatOpen() {
+  const container = document.getElementById("chat-container");
+  const body = document.getElementById("chat-body");
+  const toggle = document.getElementById("chat-toggle");
+
+  container.classList.remove("chat-minimized");
+  body.classList.remove("hidden");
+  toggle.textContent = "▼";
+}
+
+// 3. 核心查询函数 (升级为双模式)
 async function runNLQuery() {
   const input = document.getElementById("nl");
   const q = input.value.trim();
   if (!q) return;
 
+  // 确保聊天窗口打开
+  ensureChatOpen();
+
+  // 添加用户消息到聊天
+  addChatMessage("user", q);
+
+  // 清空输入框
+  input.value = "";
+
   setLoading(true);
+  showChatLoading();
+
   try {
     const resp = await fetch(`${BACKEND_BASE}/api/nl-query`, {
       method: "POST",
@@ -292,11 +358,49 @@ async function runNLQuery() {
     if (!resp.ok) throw new Error(await resp.text());
     const payload = await resp.json();
 
-    renderGeoJSON(payload.geojson, payload.plan);
-    updateInfoPanel(payload);
+    hideChatLoading();
+
+    // 根据响应类型分流处理
+    if (payload.type === "chat") {
+      // CHAT 模式：显示 AI 文本回复
+      addChatMessage("ai", payload.message);
+
+    } else if (payload.type === "map") {
+      // MAP 模式：更新地图并显示结果卡片
+      renderGeoJSON(payload.geojson, payload.plan);
+      updateInfoPanel(payload);
+
+      // 在聊天窗口显示地图结果摘要
+      const stats = payload.stats;
+      const count = stats.count || 0;
+      const maxMag = stats.max_magnitude ? `最大 ${stats.max_magnitude} 级` : "";
+
+      let locationInfo = "";
+      if (payload.plan.minlatitude != null) {
+        locationInfo = "指定区域";
+      } else {
+        locationInfo = "全球范围";
+      }
+
+      const resultText = `<strong>🗺️ 地图已更新</strong>
+找到 <strong>${count}</strong> 次地震
+${maxMag ? `${maxMag}` : ""}
+区域: ${locationInfo}
+<em>点击左下角面板查看详情</em>`;
+
+      addChatMessage("ai", resultText, true);
+    } else {
+      // 兼容旧响应格式 (无 type 字段)
+      if (payload.geojson) {
+        renderGeoJSON(payload.geojson, payload.plan);
+        updateInfoPanel(payload);
+        addChatMessage("ai", `🗺️ 已在地图上显示 ${payload.stats?.count || 0} 次地震`, true);
+      }
+    }
 
   } catch (e) {
-    alert("查询出错: " + e.message);
+    hideChatLoading();
+    addChatMessage("error", `❌ 查询出错: ${e.message}`);
   } finally {
     setLoading(false);
   }
@@ -354,3 +458,32 @@ legend.onAdd = function () {
   return div;
 };
 legend.addTo(map);
+
+// 7. 聊天窗口展开/收起
+const chatHeader = document.getElementById("chat-header");
+const chatToggle = document.getElementById("chat-toggle");
+const chatContainer = document.getElementById("chat-container");
+const chatBody = document.getElementById("chat-body");
+
+function toggleChat() {
+  const isMinimized = chatContainer.classList.contains("chat-minimized");
+
+  if (isMinimized) {
+    chatContainer.classList.remove("chat-minimized");
+    chatBody.classList.remove("hidden");
+    chatToggle.textContent = "▼";
+  } else {
+    chatContainer.classList.add("chat-minimized");
+    chatBody.classList.add("hidden");
+    chatToggle.textContent = "▲";
+  }
+}
+
+if (chatHeader) {
+  chatHeader.addEventListener("click", toggleChat);
+}
+
+// 自动展开聊天窗口 (首次加载)
+setTimeout(() => {
+  toggleChat();
+}, 500);

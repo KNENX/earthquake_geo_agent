@@ -229,6 +229,22 @@ class NLPlan(BaseModel):
     orderby: Literal["time", "magnitude"] = "time"
 
 
+# Unified response model for dual-mode agent
+class AgentResponse(BaseModel):
+    type: Literal["map", "chat"]  # Discriminator
+    # If type == "map"
+    plan: Optional[Dict[str, Any]] = None
+    geojson: Optional[Dict[str, Any]] = None
+    stats: Optional[Dict[str, Any]] = None
+    usgs_params: Optional[Dict[str, Any]] = None
+    cache_hit: Optional[bool] = None
+    llm_cache_hit: Optional[bool] = None
+    # If type == "chat"
+    message: Optional[str] = None
+    # Common metadata
+    timing_ms: Dict[str, int] = {}
+
+
 def validate_plan(plan: NLPlan) -> NLPlan:
     # --- 1. 时间逻辑校验 (大幅升级) ---
     
@@ -371,6 +387,74 @@ def plan_to_usgs_params(plan: NLPlan) -> Dict[str, Any]:
 
     return params
 
+# Intent Classification
+# -----------------------------
+async def classify_intent(query: str) -> str:
+    """Classify user query as 'QUERY' (earthquake data request) or 'CHAT' (general question)."""
+    api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
+    base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip()
+    model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
+
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Missing SILICONFLOW_API_KEY in api/.env")
+
+    llm_url = f"{base_url}/chat/completions"
+    
+    # --- [关键修改] 使用中文 Few-Shot Prompt 增强识别能力 ---
+    prompt = f"""
+你是一个意图分类器。请判断用户输入的意图是【查询数据】还是【闲聊/问答】。
+
+【查询数据 (QUERY)】
+用户想要获取**具体的地震事件记录**，或者想在**地图上查看地震**。
+特征：
+- 包含具体的时间（如"最近"、"昨天"、"2008年"）。
+- 包含具体的筛选条件（如"大于6级"、"深源"）。
+- 意图是“查看”、“搜索”、“显示”、“找一下”。
+- 示例："日本最近的地震"、"汶川地震"、"查询加州大于5级的地震"、"有没有发生过..."
+
+【闲聊/问答 (CHAT)】
+用户想要获取**知识、原理、建议**，或者只是**打招呼**。即使句子中包含地名（如中国、日本），只要是在问原因、原理或防灾知识，都属于此类。
+特征：
+- 询问“为什么”、“怎么”、“什么是”。
+- 询问定义、成因、防灾知识、逃生技巧。
+- 纯粹的打招呼（"你好"、"Hi"）。
+- 示例："地震是怎么形成的"、"为什么日本地震多"、"遇到地震怎么办"、"你好"、"什么是震级"、"中国地震带分布原因"
+
+用户输入："{query}"
+
+请只输出一个词："QUERY" 或 "CHAT"。不要输出其他内容。
+""".strip()
+    # -----------------------------------------------------
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    
+    body = {
+        "model": model,
+        "temperature": 0, # 温度设为 0 保证稳定
+        "messages": [
+            {"role": "system", "content": "You are an intent classifier. Return only 'QUERY' or 'CHAT'."},
+            {"role": "user", "content": prompt},
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(llm_url, headers=headers, json=body)
+        if resp.status_code != 200:
+            # 如果 LLM 挂了，默认兜底为 QUERY
+            return "QUERY"
+        result = resp.json()
+
+    # 提取结果并标准化
+    content = _extract_llm_content_openai_compat(result).strip().upper()
+    
+    # 简单后处理：只要包含 CHAT 就认为是 CHAT
+    if "CHAT" in content:
+        return "CHAT"
+    return "QUERY"
+
 # -----------------------------
 # Prompt 
 # -----------------------------
@@ -472,6 +556,50 @@ JSON: {{
 
 现在用户问题：{nl}
 """.strip()
+
+# -----------------------------
+# LLM Chat (General Q&A)
+# -----------------------------
+async def llm_chat(query: str) -> str:
+    """Handle general chat/Q&A with earthquake expertise."""
+    api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
+    base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip()
+    model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
+
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Missing SILICONFLOW_API_KEY in api/.env")
+
+    llm_url = f"{base_url}/chat/completions"
+
+    system_prompt = """你是一位专业的地震学专家助手。你可以：
+1. 解答关于地震的科学问题（成因、类型、测量方法等）
+2. 提供地震安全和应急知识
+3. 介绍历史著名地震事件
+4. 进行友好的日常对话
+
+请用简洁、专业但易懂的语言回答用户问题。如果用户想查询具体的地震数据，请提示他们可以直接描述查询需求，如"查询最近日本的地震"。"""
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    body = {
+        "model": model,
+        "temperature": 0.7,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(llm_url, headers=headers, json=body)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"LLM error {resp.status_code}: {resp.text[:400]}")
+        result = resp.json()
+
+    return _extract_llm_content_openai_compat(result)
 
 # -----------------------------
 # LLM call
@@ -631,12 +759,43 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
 
     llm_ms: Optional[int] = None
     usgs_ms: Optional[int] = None
+    intent_ms: Optional[int] = None
     cache_hit: Optional[bool] = None
     llm_cache_hit: Optional[bool] = None
     plan: Optional[NLPlan] = None
     usgs_params: Optional[Dict[str, Any]] = None
 
     try:
+        # Step 1: Intent Classification
+        t_intent0 = time.perf_counter()
+        intent = await classify_intent(payload.query)
+        intent_ms = int((time.perf_counter() - t_intent0) * 1000)
+        
+        record["intent"] = intent
+
+        # Step 2: Branch based on intent
+        if intent == "CHAT":
+            # CHAT mode: General Q&A
+            t_chat0 = time.perf_counter()
+            chat_response = await llm_chat(payload.query)
+            chat_ms = int((time.perf_counter() - t_chat0) * 1000)
+            
+            total_ms = int((time.perf_counter() - t0) * 1000)
+            
+            record.update({
+                "status": "success",
+                "type": "chat",
+                "timing_ms": {"total": total_ms, "intent": intent_ms, "chat": chat_ms},
+            })
+            _append_jsonl(record)
+            
+            return {
+                "type": "chat",
+                "message": chat_response,
+                "timing_ms": {"total": total_ms, "intent": intent_ms, "chat": chat_ms},
+            }
+        
+        # QUERY mode: Earthquake data retrieval
         # LLM timing + cache
         t_llm0 = time.perf_counter()
         plan, llm_cache_hit = await llm_to_plan(payload.query)
@@ -658,7 +817,8 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
 
         record.update({
             "status": "success",
-            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+            "type": "map",
+            "timing_ms": {"total": total_ms, "intent": intent_ms, "llm": llm_ms, "usgs": usgs_ms},
             "cache_hit": cache_hit,
             "llm_cache_hit": llm_cache_hit,
             "plan": plan.model_dump(),
@@ -668,13 +828,14 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
         _append_jsonl(record)
 
         return {
+            "type": "map",
             "plan": plan.model_dump(),
-            "request": {"url": USGS_EVENT_QUERY_URL, "params": usgs_params},
             "geojson": geo,
             "stats": stats,
+            "usgs_params": usgs_params,
             "cache_hit": cache_hit,
             "llm_cache_hit": llm_cache_hit,
-            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+            "timing_ms": {"total": total_ms, "intent": intent_ms, "llm": llm_ms, "usgs": usgs_ms},
         }
 
     except HTTPException as e:
@@ -683,7 +844,7 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
             "status": "fail",
             "http_status": e.status_code,
             "error": str(e.detail),
-            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
+            "timing_ms": {"total": total_ms, "intent": intent_ms, "llm": llm_ms, "usgs": usgs_ms},
             "cache_hit": cache_hit,
             "llm_cache_hit": llm_cache_hit,
             "plan": plan.model_dump() if plan else None,
@@ -693,16 +854,34 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
         raise
 
     except Exception as e:
+        # === 新增调试代码开始 ===
+        import traceback
+        print("======== 发生严重错误 ========")
+        traceback.print_exc()  # 这行代码会把具体的报错行数打印在黑框框里
+        print(f"错误详情: {str(e)}")
+        print("============================")
+        # === 新增调试代码结束 ===
+
         total_ms = int((time.perf_counter() - t0) * 1000)
+        
+        # 注意：这里可能会报另一个错，如果 intent_ms 等变量没定义
+        # 为了安全，我们用 .get() 或者默认值
         record.update({
             "status": "fail",
             "http_status": 500,
             "error": f"Unexpected error: {str(e)}",
-            "timing_ms": {"total": total_ms, "llm": llm_ms, "usgs": usgs_ms},
-            "cache_hit": cache_hit,
-            "llm_cache_hit": llm_cache_hit,
+            "timing_ms": {
+                "total": total_ms, 
+                # 使用 locals().get 防止变量未定义报错
+                "intent": locals().get('intent_ms', 0), 
+                "llm": locals().get('llm_ms', 0), 
+                "usgs": locals().get('usgs_ms', 0)
+            },
+            "cache_hit": locals().get('cache_hit', False),
+            "llm_cache_hit": locals().get('llm_cache_hit', False),
             "plan": plan.model_dump() if plan else None,
-            "usgs_params": usgs_params,
+            "usgs_params": locals().get('usgs_params', None),
         })
         _append_jsonl(record)
-        raise HTTPException(status_code=500, detail="Unexpected error")
+        # 把具体的错误发给前端，方便你在浏览器Console里看
+        raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
