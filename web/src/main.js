@@ -2,7 +2,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./style.css";
 
-const BACKEND_BASE = "http://127.0.0.1:8000";
+const BACKEND_BASE = "http://127.0.0.1:3333";
 
 // --- 1. 定义地图底图 (Base Layers) ---
 const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
