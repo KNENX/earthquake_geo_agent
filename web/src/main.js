@@ -46,7 +46,8 @@ L.control.layers(baseMaps).addTo(map);
 // --- 全局变量 ---
 let earthquakeLayer = null;
 let bboxLayer = null;
-let currentFeatures = []; // 存储当前地震数据
+let currentFeatures = [];
+let chatHistory = [];
 
 // --- 辅助函数 ---
 function colorByMag(mag) {
@@ -92,6 +93,73 @@ function formatDepth(plan) {
   if (plan.mindepth != null) return `> ${plan.mindepth} km`;
   if (plan.maxdepth != null) return `< ${plan.maxdepth} km`;
   return "不限深度";
+}
+
+// --- Chat Functions ---
+function addChatBubble(role, text) {
+  const container = document.getElementById("chat-messages");
+  if (!container) return;
+
+  const bubble = document.createElement("div");
+  bubble.className = `chat-bubble ${role === "user" ? "user" : "ai"}`;
+  bubble.textContent = text;
+  container.appendChild(bubble);
+
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const input = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("chat-send");
+  const text = input.value.trim();
+
+  if (!text) return;
+
+  input.disabled = true;
+  sendBtn.disabled = true;
+
+  addChatBubble("user", text);
+  input.value = "";
+
+  chatHistory.push({ role: "user", content: text });
+
+  const container = document.getElementById("chat-messages");
+  const loadingBubble = document.createElement("div");
+  loadingBubble.className = "chat-bubble loading";
+  loadingBubble.textContent = "思考中...";
+  loadingBubble.id = "chat-loading";
+  container.appendChild(loadingBubble);
+  container.scrollTop = container.scrollHeight;
+
+  try {
+    const resp = await fetch(`${BACKEND_BASE}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: chatHistory }),
+    });
+
+    document.getElementById("chat-loading")?.remove();
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    const data = await resp.json();
+
+    addChatBubble("ai", data.reply);
+
+    chatHistory.push({ role: "assistant", content: data.reply });
+
+  } catch (e) {
+    document.getElementById("chat-loading")?.remove();
+
+    addChatBubble("ai", "抱歉，出现了网络错误，请稍后再试。");
+    console.error("Chat error:", e);
+  } finally {
+    input.disabled = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
 }
 
 // --- 渲染逻辑 ---
@@ -275,78 +343,14 @@ if (toggleBtn) {
   });
 }
 
-// --- 聊天功能 ---
-function addChatMessage(role, content, isMapResult = false) {
-  const messages = document.getElementById("chat-messages");
-  const bubble = document.createElement("div");
-
-  if (isMapResult) {
-    bubble.className = "chat-bubble chat-map-result";
-  } else if (role === "user") {
-    bubble.className = "chat-bubble chat-user";
-  } else {
-    bubble.className = "chat-bubble chat-ai";
-  }
-
-  // Convert markdown-style formatting and line breaks
-  const formattedContent = content
-    .replace(/\n/g, "<br>")
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.*?)\*/g, "<em>$1</em>");
-
-  bubble.innerHTML = `<div class="bubble-content">${formattedContent}</div>`;
-  messages.appendChild(bubble);
-
-  // Scroll to bottom
-  messages.scrollTop = messages.scrollHeight;
-}
-
-function showChatLoading() {
-  const messages = document.getElementById("chat-messages");
-  const loader = document.createElement("div");
-  loader.id = "chat-loader";
-  loader.className = "chat-bubble chat-ai";
-  loader.innerHTML = `
-    <div class="chat-loading">
-      <span></span><span></span><span></span>
-    </div>
-  `;
-  messages.appendChild(loader);
-  messages.scrollTop = messages.scrollHeight;
-}
-
-function hideChatLoading() {
-  const loader = document.getElementById("chat-loader");
-  if (loader) loader.remove();
-}
-
-function ensureChatOpen() {
-  const container = document.getElementById("chat-container");
-  const body = document.getElementById("chat-body");
-  const toggle = document.getElementById("chat-toggle");
-
-  container.classList.remove("chat-minimized");
-  body.classList.remove("hidden");
-  toggle.textContent = "▼";
-}
-
-// 3. 核心查询函数 (升级为双模式)
+// 3. 核心查询函数
 async function runNLQuery() {
   const input = document.getElementById("nl");
   const q = input.value.trim();
   if (!q) return;
 
-  // 确保聊天窗口打开
-  ensureChatOpen();
-
-  // 添加用户消息到聊天
-  addChatMessage("user", q);
-
-  // 清空输入框
   input.value = "";
-
   setLoading(true);
-  showChatLoading();
 
   try {
     const resp = await fetch(`${BACKEND_BASE}/api/nl-query`, {
@@ -358,49 +362,11 @@ async function runNLQuery() {
     if (!resp.ok) throw new Error(await resp.text());
     const payload = await resp.json();
 
-    hideChatLoading();
-
-    // 根据响应类型分流处理
-    if (payload.type === "chat") {
-      // CHAT 模式：显示 AI 文本回复
-      addChatMessage("ai", payload.message);
-
-    } else if (payload.type === "map") {
-      // MAP 模式：更新地图并显示结果卡片
-      renderGeoJSON(payload.geojson, payload.plan);
-      updateInfoPanel(payload);
-
-      // 在聊天窗口显示地图结果摘要
-      const stats = payload.stats;
-      const count = stats.count || 0;
-      const maxMag = stats.max_magnitude ? `最大 ${stats.max_magnitude} 级` : "";
-
-      let locationInfo = "";
-      if (payload.plan.minlatitude != null) {
-        locationInfo = "指定区域";
-      } else {
-        locationInfo = "全球范围";
-      }
-
-      const resultText = `<strong>🗺️ 地图已更新</strong>
-找到 <strong>${count}</strong> 次地震
-${maxMag ? `${maxMag}` : ""}
-区域: ${locationInfo}
-<em>点击左下角面板查看详情</em>`;
-
-      addChatMessage("ai", resultText, true);
-    } else {
-      // 兼容旧响应格式 (无 type 字段)
-      if (payload.geojson) {
-        renderGeoJSON(payload.geojson, payload.plan);
-        updateInfoPanel(payload);
-        addChatMessage("ai", `🗺️ 已在地图上显示 ${payload.stats?.count || 0} 次地震`, true);
-      }
-    }
+    renderGeoJSON(payload.geojson, payload.plan);
+    updateInfoPanel(payload);
 
   } catch (e) {
-    hideChatLoading();
-    addChatMessage("error", `❌ 查询出错: ${e.message}`);
+    alert(`查询出错: ${e.message}`);
   } finally {
     setLoading(false);
   }
@@ -459,31 +425,19 @@ legend.onAdd = function () {
 };
 legend.addTo(map);
 
-// 7. 聊天窗口展开/收起
-const chatHeader = document.getElementById("chat-header");
-const chatToggle = document.getElementById("chat-toggle");
-const chatContainer = document.getElementById("chat-container");
-const chatBody = document.getElementById("chat-body");
+// Chat event listeners
+const chatSendBtn = document.getElementById("chat-send");
+const chatInput = document.getElementById("chat-input");
 
-function toggleChat() {
-  const isMinimized = chatContainer.classList.contains("chat-minimized");
-
-  if (isMinimized) {
-    chatContainer.classList.remove("chat-minimized");
-    chatBody.classList.remove("hidden");
-    chatToggle.textContent = "▼";
-  } else {
-    chatContainer.classList.add("chat-minimized");
-    chatBody.classList.add("hidden");
-    chatToggle.textContent = "▲";
-  }
+if (chatSendBtn) {
+  chatSendBtn.addEventListener("click", sendChatMessage);
 }
 
-if (chatHeader) {
-  chatHeader.addEventListener("click", toggleChat);
+if (chatInput) {
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
 }
-
-// 自动展开聊天窗口 (首次加载)
-setTimeout(() => {
-  toggleChat();
-}, 500);

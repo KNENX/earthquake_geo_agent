@@ -25,7 +25,7 @@ if (Test-Path $apiPidFile) {
     throw "API venv python not found: $apiPython"
   }
 
-  $apiArgs = @("-m", "uvicorn", "main:app", "--reload", "--port", "8000")
+  $apiArgs = @("-m", "uvicorn", "main:app", "--port", "3333")
 
   $apiProc = Start-Process `
     -FilePath $apiPython `
@@ -66,4 +66,4 @@ if (Test-Path $webPidFile) {
 Write-Host ""
 Write-Host "Open:"
 Write-Host "  Frontend: http://localhost:5173/"
-Write-Host "  Backend docs: http://127.0.0.1:8000/docs"
+Write-Host "  Backend docs: http://127.0.0.1:3333/docs"

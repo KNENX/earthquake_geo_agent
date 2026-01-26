@@ -51,23 +51,17 @@
     </button>
   </div>
 
-  <!-- 聊天窗口 (右下角) -->
-  <div id="chat-container" class="chat-minimized">
+  <!-- Right Sidebar: Chat Area -->
+  <div id="chat-sidebar">
     <div id="chat-header">
-      <span class="chat-title">🤖 AI 助手</span>
-      <button id="chat-toggle" title="展开/收起">▲</button>
+      <span>💬 地震知识问答</span>
     </div>
-    <div id="chat-body" class="hidden">
-      <div id="chat-messages">
-        <!-- 欢迎消息 -->
-        <div class="chat-bubble chat-ai">
-          <div class="bubble-content">
-            你好！我是地震 AI 助手。你可以：<br>
-            • 查询地震数据：<em>"日本最近的地震"</em><br>
-            • 问我问题：<em>"地震是怎么形成的？"</em>
-          </div>
-        </div>
-      </div>
+    <div id="chat-messages">
+      <div class="chat-bubble ai">你好！我是地震知识助手，有什么关于地震的问题都可以问我。</div>
+    </div>
+    <div id="chat-input-area">
+      <input type="text" id="chat-input" placeholder="输入问题，如：地震是怎么形成的？" />
+      <button id="chat-send">发送</button>
     </div>
   </div>
 
