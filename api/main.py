@@ -673,13 +673,6 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
             llm_ms = 0
         else:
             llm_ms = int((time.perf_counter() - t_llm0) * 1000)
-        # LLM timing + cache
-        t_llm0 = time.perf_counter()
-        plan, llm_cache_hit = await llm_to_plan(payload.query)
-        if llm_cache_hit:
-            llm_ms = 0
-        else:
-            llm_ms = int((time.perf_counter() - t_llm0) * 1000)
 
         # Backend computes absolute times in UTC ISO
         usgs_params = plan_to_usgs_params(plan)
@@ -777,7 +770,26 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
 
     system_prompt = {
         "role": "system",
-        "content": "你是一位专业的地震学专家助手。你可以解答关于地震的科学问题（成因、类型、测量方法等）、提供地震安全和应急知识、介绍历史著名地震事件。请用简洁、专业但易懂的中文回答用户问题。"
+        "content": """你是一位专业的地震学专家助手，具备以下能力：
+
+1. **数据分析能力**：当用户提供地震数据背景时，你可以：
+   - 总结地震分布特征（时间、空间、震级分布）
+   - 找出最大/最小震级的地震及其位置
+   - 分析地震活动的规律和趋势
+   - 解释特定地区地震频发的原因
+
+2. **科普知识能力**：你可以解答：
+   - 地震的成因、类型、测量方法
+   - 地震安全和应急知识
+   - 历史著名地震事件
+   - 地震相关的专业术语
+
+3. **回答规则**：
+   - 如果用户询问数据相关问题（如"总结一下"、"最大的在哪"），请基于【当前地图上的地震数据背景】回答
+   - 如果没有数据背景但用户询问数据，请回复："您还没有查询过地震数据，请先在顶部搜索框输入查询条件（如"日本最近的地震"），然后我可以帮您分析。"
+   - 如果是纯知识性问题，直接回答即可
+   - 使用简洁、专业但易懂的中文回答
+   - 在分析数据时，可以适当指出有趣的发现或规律"""
     }
     messages.insert(0, system_prompt)
 

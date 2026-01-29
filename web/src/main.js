@@ -48,6 +48,11 @@ let earthquakeLayer = null;
 let bboxLayer = null;
 let currentFeatures = [];
 let chatHistory = [];
+let lastQueryContext = null;
+
+// Chart instances
+let magChart = null;
+let depthChart = null;
 
 // --- 辅助函数 ---
 function colorByMag(mag) {
@@ -65,6 +70,16 @@ function radiusByMag(mag) {
 
 function formatTime(ms) {
   return new Date(ms).toLocaleString();
+}
+
+function formatMag(mag) {
+  if (mag === null || mag === undefined || isNaN(mag)) return '-';
+  return Number(mag).toFixed(2);
+}
+
+function formatDepthValue(depth) {
+  if (depth === null || depth === undefined || isNaN(depth)) return '-';
+  return Number(depth).toFixed(2);
 }
 
 function formatMagRange(plan) {
@@ -95,6 +110,222 @@ function formatDepth(plan) {
   return "不限深度";
 }
 
+// Update the last query context when a search is performed
+function updateQueryContext(userQuery, plan, geojson, stats) {
+  const features = geojson.features || [];
+  
+  // Sort by magnitude (descending) and prepare data
+  const sortedFeatures = [...features]
+    .sort((a, b) => (b.properties.mag || 0) - (a.properties.mag || 0));
+  
+  // Build feature summaries for AI
+  const featureSummaries = sortedFeatures.map((f, index) => {
+    const p = f.properties;
+    const coords = f.geometry.coordinates;
+    const depth = coords[2];
+    const time = new Date(p.time).toLocaleString('zh-CN');
+    return {
+      rank: index + 1,
+      place: p.place || 'Unknown',
+      mag: formatMag(p.mag),
+      depth: formatDepthValue(depth),
+      time: time,
+      lat: coords[1],
+      lon: coords[0]
+    };
+  });
+  
+  // Store context
+  lastQueryContext = {
+    userQuery: userQuery,
+    timestamp: new Date().toLocaleString('zh-CN'),
+    region: formatLocation(plan),
+    timeRange: plan.starttime 
+      ? `${plan.starttime.split('T')[0]} 至 ${plan.endtime ? plan.endtime.split('T')[0] : '现在'}`
+      : `过去 ${plan.window_value} ${plan.window_unit === 'hours' ? '小时' : '天'}`,
+    totalCount: stats.count,
+    maxMagnitude: formatMag(stats.max_magnitude),
+    features: featureSummaries
+  };
+  
+  console.log('Query context updated:', lastQueryContext);
+}
+
+// Build a context-aware message for the AI
+function buildContextAwareMessage(userMessage) {
+  if (!lastQueryContext || lastQueryContext.totalCount === 0) {
+    return {
+      hasContext: false,
+      content: userMessage
+    };
+  }
+  
+  const featureList = lastQueryContext.features.map(f => 
+    `${f.rank}. ${f.place} | 震级:${f.mag} | 深度:${f.depth}km | 时间:${f.time}`
+  ).join('\n');
+  
+  const contextMessage = `【当前地图上的地震数据背景】
+用户查询：${lastQueryContext.userQuery}
+查询时间：${lastQueryContext.timestamp}
+时间范围：${lastQueryContext.timeRange}
+查询区域：${lastQueryContext.region}
+结果统计：共 ${lastQueryContext.totalCount} 次地震，最大震级 ${lastQueryContext.maxMagnitude}
+
+详细数据列表（按震级排序）：
+${featureList}
+
+---
+【用户当前问题】：${userMessage}`;
+
+  return {
+    hasContext: true,
+    content: contextMessage
+  };
+}
+
+// Calculate magnitude distribution (5 categories based on USGS standards)
+function calculateMagDistribution(features) {
+  const distribution = {
+    'Minor (<4.0)': 0,
+    'Light (4-5)': 0,
+    'Moderate (5-6)': 0,
+    'Strong (6-7)': 0,
+    'Major (≥7)': 0
+  };
+  
+  features.forEach(f => {
+    const mag = f.properties?.mag;
+    if (mag === null || mag === undefined) return;
+    
+    if (mag < 4.0) distribution['Minor (<4.0)']++;
+    else if (mag < 5.0) distribution['Light (4-5)']++;
+    else if (mag < 6.0) distribution['Moderate (5-6)']++;
+    else if (mag < 7.0) distribution['Strong (6-7)']++;
+    else distribution['Major (≥7)']++;
+  });
+  
+  return distribution;
+}
+
+// Calculate depth distribution (3 categories based on IASPEI standards)
+function calculateDepthDistribution(features) {
+  const distribution = {
+    'Shallow (0-70km)': 0,
+    'Intermediate (70-300km)': 0,
+    'Deep (>300km)': 0
+  };
+  
+  features.forEach(f => {
+    const depth = f.geometry?.coordinates?.[2];
+    if (depth === null || depth === undefined) return;
+    
+    if (depth <= 70) distribution['Shallow (0-70km)']++;
+    else if (depth <= 300) distribution['Intermediate (70-300km)']++;
+    else distribution['Deep (>300km)']++;
+  });
+  
+  return distribution;
+}
+
+// Render doughnut charts
+function renderCharts(features) {
+  const magDistribution = calculateMagDistribution(features);
+  const depthDistribution = calculateDepthDistribution(features);
+  
+  // Magnitude chart colors (warm colors: gray to red to purple)
+  const magColors = ['#d9d9d9', '#fee08b', '#fc8d59', '#e34a33', '#7a0177'];
+  
+  // Depth chart colors (cool colors: orange, blue, dark blue)
+  const depthColors = ['#fc8d59', '#4575b4', '#313695'];
+  
+  // Destroy existing charts if they exist
+  if (magChart) {
+    magChart.destroy();
+    magChart = null;
+  }
+  if (depthChart) {
+    depthChart.destroy();
+    depthChart = null;
+  }
+  
+  // Get canvas elements
+  const magCtx = document.getElementById('mag-chart');
+  const depthCtx = document.getElementById('depth-chart');
+  
+  if (!magCtx || !depthCtx) return;
+  
+  // Chart options (shared)
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      legend: {
+        display: false
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context) {
+            const label = context.label || '';
+            const value = context.parsed || 0;
+            const total = context.dataset.data.reduce((a, b) => a + b, 0);
+            const percentage = total > 0 ? Math.round((value / total) * 100) : 0;
+            return `${label}: ${value} (${percentage}%)`;
+          }
+        }
+      }
+    },
+    cutout: '60%'
+  };
+  
+  // Create magnitude chart
+  magChart = new Chart(magCtx, {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(magDistribution),
+      datasets: [{
+        data: Object.values(magDistribution),
+        backgroundColor: magColors,
+        borderWidth: 1,
+        borderColor: '#fff'
+      }]
+    },
+    options: chartOptions
+  });
+  
+  // Create depth chart
+  depthChart = new Chart(depthCtx, {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(depthDistribution),
+      datasets: [{
+        data: Object.values(depthDistribution),
+        backgroundColor: depthColors,
+        borderWidth: 1,
+        borderColor: '#fff'
+      }]
+    },
+    options: chartOptions
+  });
+}
+
+// Setup collapsible section toggles
+function setupCollapsibles() {
+  const toggleButtons = document.querySelectorAll('.collapsible-header');
+  
+  toggleButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const content = button.nextElementSibling;
+      const isHidden = content.classList.contains('hidden');
+      
+      // Toggle the content
+      content.classList.toggle('hidden');
+      
+      // Toggle the active class for icon rotation
+      button.classList.toggle('active', isHidden);
+    });
+  });
+}
+
 // --- Chat Functions ---
 function addChatBubble(role, text) {
   const container = document.getElementById("chat-messages");
@@ -112,17 +343,24 @@ async function sendChatMessage() {
   const input = document.getElementById("chat-input");
   const sendBtn = document.getElementById("chat-send");
   const text = input.value.trim();
-
+  
   if (!text) return;
 
+  // Disable input while processing
   input.disabled = true;
   sendBtn.disabled = true;
 
+  // Show user message in UI (original text, not the context-enhanced version)
   addChatBubble("user", text);
   input.value = "";
 
-  chatHistory.push({ role: "user", content: text });
+  // Build context-aware message
+  const contextResult = buildContextAwareMessage(text);
+  
+  // Add to history (use the context-enhanced content for AI, but store original for display)
+  chatHistory.push({ role: "user", content: contextResult.content });
 
+  // Show loading indicator
   const container = document.getElementById("chat-messages");
   const loadingBubble = document.createElement("div");
   loadingBubble.className = "chat-bubble loading";
@@ -138,6 +376,7 @@ async function sendChatMessage() {
       body: JSON.stringify({ messages: chatHistory }),
     });
 
+    // Remove loading indicator
     document.getElementById("chat-loading")?.remove();
 
     if (!resp.ok) {
@@ -145,14 +384,15 @@ async function sendChatMessage() {
     }
 
     const data = await resp.json();
-
+    
+    // Show AI response
     addChatBubble("ai", data.reply);
-
+    
+    // Add AI response to history
     chatHistory.push({ role: "assistant", content: data.reply });
 
   } catch (e) {
     document.getElementById("chat-loading")?.remove();
-
     addChatBubble("ai", "抱歉，出现了网络错误，请稍后再试。");
     console.error("Chat error:", e);
   } finally {
@@ -189,8 +429,8 @@ function renderGeoJSON(geojson, plan) {
       const depth = feature.geometry.coordinates[2];
       layer.bindPopup(
         `<b>${p.place}</b><br/>
-         震级: <b>${p.mag}</b><br/>
-         深度: ${depth} km<br/>
+         震级: <b>${formatMag(p.mag)}</b><br/>
+         深度: <b>${formatDepthValue(depth)}</b> km<br/>
          时间: ${formatTime(p.time)}<br/>
          <a href="${p.url}" target="_blank">USGS详情</a>`
       );
@@ -242,15 +482,24 @@ function setLoading(isLoading) {
   }
 }
 
+// Update info panel with query results
 function updateInfoPanel(payload) {
   const panel = document.getElementById("info-panel");
-  const content = document.getElementById("info-content");
   panel.classList.remove("hidden");
 
   const plan = payload.plan;
   const stats = payload.stats;
   const timing = payload.timing_ms;
+  const features = payload.geojson?.features || [];
 
+  // Update main stats
+  document.getElementById('stat-count').textContent = stats.count || 0;
+  document.getElementById('stat-max-mag').textContent = formatMag(stats.max_magnitude);
+
+  // Render charts
+  renderCharts(features);
+
+  // Update AI details
   let timeStr = "";
   if (plan.starttime) {
     const start = plan.starttime.split("T")[0];
@@ -262,61 +511,60 @@ function updateInfoPanel(payload) {
     timeStr = `过去 ${val} ${unit}`;
   }
 
-  content.innerHTML = `
-    <h4 class="info-title">🧠 AI 理解结果</h4>
-    <ul class="info-list">
-      <li><strong>时间:</strong> ${timeStr}</li>
-      <li><strong>区域:</strong> ${formatLocation(plan)}</li>
-      <li><strong>震级:</strong> ${formatMagRange(plan)}</li>
-      <li><strong>深度:</strong> ${formatDepth(plan)}</li>
-    </ul>
-    
-    <hr class="info-hr">
-    
-    <div class="info-stats">
-      <strong>📊 搜索结果:</strong> 
-      找到 <b style="color: #d63031;">${stats.count}</b> 次地震 
-      ${stats.max_magnitude ? `(最大 <b>${stats.max_magnitude}</b> 级)` : ''}
-    </div>
-    
-    <div class="info-footer">
-      耗时: LLM ${timing.llm}ms + API ${timing.usgs}ms = <strong>${timing.total}ms</strong>
-      ${payload.cache_hit ? '<span style="color:green; margin-left:5px;">(⚡Cache Hit)</span>' : ''}
-    </div>
+  const aiDetailsList = document.getElementById('ai-details-list');
+  aiDetailsList.innerHTML = `
+    <li><strong>时间:</strong> ${timeStr}</li>
+    <li><strong>区域:</strong> ${formatLocation(plan)}</li>
+    <li><strong>震级:</strong> ${formatMagRange(plan)}</li>
+    <li><strong>深度:</strong> ${formatDepth(plan)}</li>
   `;
 
-  currentFeatures = payload.geojson.features || [];
+  // Update timing info
+  const timingInfo = document.getElementById('timing-info');
+  timingInfo.innerHTML = `
+    ⏱️ 耗时: LLM ${timing.llm}ms + API ${timing.usgs}ms = ${timing.total}ms
+    ${payload.cache_hit ? '<span style="color:green;"> (缓存命中)</span>' : ''}
+  `;
 
-  const listContainer = document.getElementById("quake-list-container");
-  const toggleBtn = document.getElementById("toggle-list");
+  // Update earthquake list
+  renderList(features.slice(0, 50));
 
-  if (listContainer && toggleBtn) {
-    listContainer.classList.add("hidden");
-    toggleBtn.textContent = "展开详细列表 ▼";
-    toggleBtn.style.display = currentFeatures.length > 0 ? "block" : "none";
-    renderList(currentFeatures.slice(0, 50));
+  // Update query context for chat
+  if (typeof updateQueryContext === 'function') {
+    updateQueryContext(document.getElementById('nl').value, plan, payload.geojson, stats);
   }
 }
 
-// --- 列表渲染 ---
+// Render earthquake list
 function renderList(features) {
   const list = document.getElementById("quake-list");
   if (!list) return;
+  
   list.innerHTML = "";
-
+  
+  if (features.length === 0) {
+    list.innerHTML = '<li style="color:#999;padding:10px 0;">暂无数据</li>';
+    return;
+  }
+  
   features.forEach(f => {
     const p = f.properties;
     const coords = f.geometry.coordinates;
+    const depth = coords[2];
+    const time = new Date(p.time).toLocaleDateString('zh-CN');
+    
     const li = document.createElement("li");
     li.className = "quake-item";
     li.innerHTML = `
-      <span class="quake-mag">${p.mag}</span>
-      <span class="quake-place" title="${p.place}">${p.place}</span>
-      <span class="quake-time">${new Date(p.time).toLocaleDateString()}</span>
+      <span class="quake-mag">${formatMag(p.mag)}</span>
+      <span class="quake-place" title="${p.place}">${p.place || 'Unknown'}</span>
+      <span class="quake-time">${time}</span>
     `;
+    
     li.addEventListener("click", () => {
       map.flyTo([coords[1], coords[0]], 8);
     });
+    
     list.appendChild(li);
   });
 }
@@ -327,21 +575,6 @@ function renderList(features) {
 document.getElementById("close-info").addEventListener("click", () => {
   document.getElementById("info-panel").classList.add("hidden");
 });
-
-// 2. 列表展开/收起
-const toggleBtn = document.getElementById("toggle-list");
-if (toggleBtn) {
-  toggleBtn.addEventListener("click", () => {
-    const container = document.getElementById("quake-list-container");
-    if (container.classList.contains("hidden")) {
-      container.classList.remove("hidden");
-      toggleBtn.textContent = "收起列表 ▲";
-    } else {
-      container.classList.add("hidden");
-      toggleBtn.textContent = "展开详细列表 ▼";
-    }
-  });
-}
 
 // 3. 核心查询函数
 async function runNLQuery() {
@@ -364,6 +597,7 @@ async function runNLQuery() {
 
     renderGeoJSON(payload.geojson, payload.plan);
     updateInfoPanel(payload);
+    updateQueryContext(q, payload.plan, payload.geojson, payload.stats);
 
   } catch (e) {
     alert(`查询出错: ${e.message}`);
@@ -441,3 +675,6 @@ if (chatInput) {
     }
   });
 }
+
+// Initialize collapsible sections
+setupCollapsibles();

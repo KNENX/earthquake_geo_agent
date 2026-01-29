@@ -73,23 +73,23 @@ body, html {
   cursor: not-allowed;
 }
 
-/* === 悬浮信息面板 (左下角卡片) === */
+/* ========== Info Panel - Restructured ========== */
 #info-panel {
   position: absolute;
   bottom: 30px;
   left: 20px;
   z-index: 1000;
-  width: 320px;
-  max-width: calc(100% - 360px); /* Don't overlap with chat sidebar */
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(5px);
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-  padding: 15px;
+  width: 340px;
+  max-width: calc(100% - 360px);
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  padding: 0;
   font-size: 14px;
-  max-height: 60%;
+  max-height: 80vh;
   overflow-y: auto;
-  transition: opacity 0.3s;
+  overflow-x: hidden;
 }
 
 #info-panel.hidden {
@@ -98,14 +98,220 @@ body, html {
 
 #close-info {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 8px;
+  right: 8px;
   background: none;
   border: none;
   font-size: 20px;
   color: #666;
   cursor: pointer;
-  line-height: 1;
+  z-index: 10;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#close-info:hover {
+  background: #f0f0f0;
+  color: #333;
+}
+
+/* Main Stats Section */
+#info-stats-section {
+  padding: 20px;
+  background: linear-gradient(135deg, #4285F4, #34a853);
+  border-radius: 12px 12px 0 0;
+  color: white;
+}
+
+#info-main-stats {
+  display: flex;
+  justify-content: space-around;
+  text-align: center;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-number {
+  font-size: 32px;
+  font-weight: bold;
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 12px;
+  opacity: 0.9;
+  margin-top: 4px;
+}
+
+/* Charts Section */
+#info-charts-section {
+  display: flex;
+  padding: 15px;
+  gap: 10px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #eee;
+}
+
+.chart-container {
+  flex: 1;
+  text-align: center;
+}
+
+.chart-title {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.chart-container canvas {
+  max-width: 120px;
+  max-height: 120px;
+  margin: 0 auto;
+}
+
+/* Collapsible Sections */
+.collapsible-section {
+  border-bottom: 1px solid #eee;
+}
+
+.collapsible-section:last-child {
+  border-bottom: none;
+}
+
+.collapsible-header {
+  width: 100%;
+  padding: 12px 15px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  color: #333;
+  transition: background 0.2s;
+}
+
+.collapsible-header:hover {
+  background: #f5f5f5;
+}
+
+.collapse-icon {
+  font-size: 10px;
+  color: #999;
+  transition: transform 0.3s;
+}
+
+.collapsible-header.active .collapse-icon {
+  transform: rotate(180deg);
+}
+
+.collapsible-content {
+  padding: 0 15px 15px 15px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.collapsible-content.hidden {
+  display: none;
+}
+
+/* AI Details List */
+.info-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.info-list li {
+  padding: 4px 0;
+  font-size: 13px;
+  color: #555;
+}
+
+.info-list li strong {
+  color: #333;
+}
+
+/* Timing Info */
+.timing-info {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #ddd;
+  font-size: 11px;
+  color: #888;
+}
+
+/* Earthquake List */
+#quake-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quake-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.quake-item:hover {
+  background: #f9f9f9;
+}
+
+.quake-item:last-child {
+  border-bottom: none;
+}
+
+.quake-mag {
+  background: #e34a33;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: bold;
+  font-size: 11px;
+  min-width: 32px;
+  text-align: center;
+}
+
+.quake-place {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #333;
+}
+
+.quake-time {
+  color: #999;
+  font-size: 11px;
+}
+
+/* Custom Scrollbar for Info Panel */
+#info-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+#info-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#info-panel::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
 }
 
 /* === Loading 动画 (小转圈) === */
@@ -132,33 +338,6 @@ body, html {
   top: 80px; /* 避开顶部的搜索栏 */
 }
 
-/* Info Panel 内部排版样式 */
-.info-title {
-  margin: 0 0 8px 0;
-  color: #444;
-  font-weight: 700;
-}
-.info-list {
-  margin: 0;
-  padding-left: 20px;
-  line-height: 1.6;
-  color: #555;
-}
-.info-hr {
-  border: 0;
-  border-top: 1px solid #ddd;
-  margin: 10px 0;
-}
-.info-stats {
-  margin-bottom: 5px;
-  color: #333;
-}
-.info-footer {
-  color: #777;
-  font-size: 0.85em;
-  margin-top: 5px;
-}
-
 /* 定位按钮样式 */
 #btn-locate {
   background: white;
@@ -173,40 +352,6 @@ body, html {
 #btn-locate:hover {
   background: #f5f5f5;
   color: #4285F4;
-}
-
-/* 列表样式 */
-.quake-item {
-  padding: 6px 4px;
-  border-bottom: 1px solid #eee;
-  cursor: pointer;
-  font-size: 13px;
-  display: flex;
-  justify-content: space-between;
-}
-.quake-item:hover {
-  background-color: #f9f9f9;
-}
-.quake-mag {
-  font-weight: bold;
-  color: #d63031;
-  min-width: 35px;
-}
-.quake-place {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  margin-right: 5px;
-}
-.quake-time {
-  color: #999;
-  font-size: 11px;
-}
-
-/* Info 面板里的隐藏类 */
-#quake-list-container.hidden {
-  display: none;
 }
 
 /* ========== Right Sidebar - Chat Area ========== */

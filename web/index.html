@@ -9,6 +9,8 @@
     content="AI-powered earthquake data search and expert chat assistant. Query global earthquake data or ask questions about seismology." />
   <!-- 引入 Google Fonts 提升质感 -->
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- Chart.js for data visualization -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 
 <body>
@@ -32,23 +34,64 @@
     </div>
   </div>
 
-  <!-- 悬浮信息面板 (左下角) -->
+  <!-- Info Panel - Restructured -->
   <div id="info-panel" class="hidden">
     <button id="close-info" title="关闭">×</button>
-    <div id="info-content"></div>
-
-    <!-- 列表容器 -->
-    <hr class="info-hr">
-    <div id="quake-list-container" class="hidden">
-      <h5 style="margin:5px 0">地震列表 (Top 50)</h5>
-      <ul id="quake-list" style="list-style:none; padding:0; margin:0; max-height:200px; overflow-y:auto;">
-        <!-- JS 动态填充 -->
-      </ul>
+    
+    <!-- Core Stats Section -->
+    <div id="info-stats-section">
+      <div id="info-main-stats">
+        <div class="stat-item">
+          <span class="stat-number" id="stat-count">0</span>
+          <span class="stat-label">次地震</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-number" id="stat-max-mag">-</span>
+          <span class="stat-label">最大震级</span>
+        </div>
+      </div>
     </div>
-    <button id="toggle-list"
-      style="width:100%; margin-top:10px; cursor:pointer; background:#f0f0f0; border:none; padding:5px; border-radius:4px;">
-      展开详细列表 ▼
-    </button>
+
+    <!-- Charts Section -->
+    <div id="info-charts-section">
+      <div class="chart-container">
+        <div class="chart-title">震级分布</div>
+        <canvas id="mag-chart"></canvas>
+      </div>
+      <div class="chart-container">
+        <div class="chart-title">深度分布</div>
+        <canvas id="depth-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Collapsible: AI Understanding -->
+    <div class="collapsible-section">
+      <button class="collapsible-header" id="toggle-ai-details">
+        <span>🧠 AI 理解结果</span>
+        <span class="collapse-icon">▼</span>
+      </button>
+      <div class="collapsible-content hidden" id="ai-details-content">
+        <ul class="info-list" id="ai-details-list">
+          <!-- Filled by JS -->
+        </ul>
+        <div class="timing-info" id="timing-info">
+          <!-- Timing info filled by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Collapsible: Earthquake List -->
+    <div class="collapsible-section">
+      <button class="collapsible-header" id="toggle-quake-list">
+        <span>📋 详细列表</span>
+        <span class="collapse-icon">▼</span>
+      </button>
+      <div class="collapsible-content hidden" id="quake-list-container">
+        <ul id="quake-list">
+          <!-- Filled by JS -->
+        </ul>
+      </div>
+    </div>
   </div>
 
   <!-- Right Sidebar: Chat Area -->
