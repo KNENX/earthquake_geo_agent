@@ -663,3 +663,84 @@ html {
 .custom-map-control:hover {
   background: #f4f4f4;
 }
+
+/* ========== Export Button ========== */
+#export-container {
+  position: absolute;
+  bottom: 30px;
+  left: 380px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+@media (max-width: 800px) {
+  #export-container {
+    bottom: 100px;
+    left: 20px;
+  }
+}
+
+#btn-export-trigger {
+  background: #4285F4;
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: transform 0.2s, background 0.2s;
+}
+
+#btn-export-trigger:hover {
+  background: #3367D6;
+  transform: translateY(-2px);
+}
+
+#btn-export-trigger:active {
+  transform: translateY(0);
+}
+
+#export-menu {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+#export-menu.hidden {
+  display: none;
+}
+
+.export-option {
+  background: none;
+  border: none;
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 13px;
+  color: #333;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.export-option:hover {
+  background: #f5f5f5;
+  color: #4285F4;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}

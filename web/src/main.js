@@ -101,6 +101,48 @@ function getHeatmapPoints(features) {
   });
 }
 
+// Helper: Download a string as a file
+function downloadFile(content, fileName, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Helper: Convert GeoJSON features to CSV string
+function convertToCSV(features) {
+  // Define CSV headers
+  const headers = ['Time', 'Magnitude', 'Place', 'Depth (km)', 'Latitude', 'Longitude', 'USGS ID', 'URL'];
+  
+  // Map features to rows
+  const rows = features.map(f => {
+    const p = f.properties;
+    const c = f.geometry.coordinates;
+    
+    // Handle potential nulls and formatting
+    const time = new Date(p.time).toISOString();
+    const mag = p.mag || 0;
+    const place = `"${(p.place || '').replace(/"/g, '""')}"`; // Escape quotes
+    const depth = c[2];
+    const lat = c[1];
+    const lon = c[0];
+    const id = f.id;
+    const url = p.url;
+    
+    return [time, mag, place, depth, lat, lon, id, url].join(',');
+  });
+  
+  // Combine header and rows
+  return [headers.join(',')].concat(rows).join('\n');
+}
+
 function formatMagRange(plan) {
   if (plan.mag_phrase) return `描述为"${plan.mag_phrase}"`;
   if (plan.minmagnitude && plan.maxmagnitude) return `${plan.minmagnitude} - ${plan.maxmagnitude} 级`;
@@ -1099,3 +1141,56 @@ const chatClearBtn = document.getElementById('chat-clear');
 if (chatClearBtn) {
   chatClearBtn.addEventListener('click', clearChatHistory);
 }
+
+// --- Export Logic ---
+const exportBtn = document.getElementById('btn-export-trigger');
+const exportMenu = document.getElementById('export-menu');
+const exportOptions = document.querySelectorAll('.export-option');
+
+// Toggle menu
+if (exportBtn) {
+  exportBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Prevent document click from closing it immediately
+    
+    // Check if we have data to export
+    if (!currentFeatures || currentFeatures.length === 0) {
+      alert('暂无数据可导出，请先查询地震数据。');
+      return;
+    }
+    
+    exportMenu.classList.toggle('hidden');
+  });
+}
+
+// Close menu when clicking outside
+document.addEventListener('click', () => {
+  if (exportMenu && !exportMenu.classList.contains('hidden')) {
+    exportMenu.classList.add('hidden');
+  }
+});
+
+// Handle export options
+exportOptions.forEach(opt => {
+  opt.addEventListener('click', () => {
+    const type = opt.dataset.type;
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const fileName = `earthquakes_${timestamp}.${type}`; // e.g., earthquakes_2024-01-15.csv
+    
+    if (type === 'csv') {
+      const csvContent = convertToCSV(currentFeatures);
+      downloadFile(csvContent, fileName, 'text/csv;charset=utf-8;');
+    } else if (type === 'geojson') {
+      // Reconstruct full GeoJSON object
+      const geojsonObj = {
+        type: "FeatureCollection",
+        metadata: { generated: new Date().getTime(), title: "Exported from Earthquake Agent" },
+        features: currentFeatures
+      };
+      const jsonContent = JSON.stringify(geojsonObj, null, 2);
+      downloadFile(jsonContent, fileName, 'application/geo+json');
+    }
+    
+    // Close menu
+    exportMenu.classList.add('hidden');
+  });
+});
