@@ -1,33 +1,45 @@
+# ============================================
+# status.ps1 - Check service status
+# ============================================
 $ErrorActionPreference = "Continue"
 
 $PIDS_DIR = Join-Path $PSScriptRoot "pids"
 $apiPidFile = Join-Path $PIDS_DIR "api.pid"
 $webPidFile = Join-Path $PIDS_DIR "web.pid"
 
-function Stop-ByPidFile([string]$pidFile, [string]$name) {
+function Show-Status {
+  param(
+    [string]$pidFile,
+    [string]$name,
+    [string]$url
+  )
+    
   if (-not (Test-Path $pidFile)) {
-    Write-Host "${name}: not running (no pid file)."
+    Write-Host "$name : Not running"
     return
   }
 
   $procId = (Get-Content $pidFile | Select-Object -First 1).Trim()
   if (-not $procId) {
-    Write-Host "${name}: empty pid file, removing."
-    Remove-Item -Force $pidFile
+    Write-Host "$name : Not running (empty pid file)"
     return
   }
 
-  Write-Host "Stopping ${name} PID=${procId} ..."
-  try {
-    Stop-Process -Id ([int]$procId) -Force -ErrorAction Stop
-    Write-Host "${name} stopped."
-  } catch {
-    Write-Host "${name}: process not found or already stopped."
+  $p = Get-Process -Id ([int]$procId) -ErrorAction SilentlyContinue
+  if ($null -eq $p) {
+    Write-Host "$name : Not running (process exited, PID=$procId)"
   }
-
-  Remove-Item -Force $pidFile
+  else {
+    Write-Host "$name : Running (PID=$procId) -> $url"
+  }
 }
 
-# 先停前端再停后端
-Stop-ByPidFile $webPidFile "Web"
-Stop-ByPidFile $apiPidFile "API"
+Write-Host ""
+Write-Host "========== Service Status =========="
+Show-Status -pidFile $apiPidFile -name "API (Backend)" -url "http://127.0.0.1:3333"
+Show-Status -pidFile $webPidFile -name "Web (Frontend)" -url "http://localhost:5173"
+
+Write-Host ""
+Write-Host "Commands:"
+Write-Host "  Start: .\scripts\start.ps1"
+Write-Host "  Stop:  .\scripts\stop.ps1"

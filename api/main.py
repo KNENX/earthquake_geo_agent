@@ -503,15 +503,15 @@ JSON: {{
 
 
 # -----------------------------
-# LLM call
+# LLM call (Query - uses lightweight model for speed)
 # -----------------------------
 async def llm_to_plan(nl: str) -> Tuple[NLPlan, bool]:
-    api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
-    base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip()
-    model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
+    api_key = os.getenv("NVIDIA_API_KEY", "").strip()
+    base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
+    model = os.getenv("QUERY_MODEL", "meta/llama-3.1-8b-instruct").strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="Missing SILICONFLOW_API_KEY in api/.env")
+        raise HTTPException(status_code=500, detail="Missing NVIDIA_API_KEY in api/.env")
 
     llm_url = f"{base_url}/chat/completions"
 
@@ -758,38 +758,40 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
 
 @app.post("/api/chat")
 async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
-    """Handle multi-turn chat conversations about earthquakes."""
-    api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
-    base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1").strip()
-    model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
+    """Handle multi-turn chat conversations about earthquakes (uses large model)."""
+    api_key = os.getenv("NVIDIA_API_KEY", "").strip()
+    base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
+    model = os.getenv("CHAT_MODEL", "z-ai/glm4.7").strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="Missing SILICONFLOW_API_KEY")
+        raise HTTPException(status_code=500, detail="Missing NVIDIA_API_KEY")
 
     messages = [{"role": m.role, "content": m.content} for m in payload.messages]
+    
+    # Debug: Print incoming message info
+    total_content_length = sum(len(m.content) for m in payload.messages)
+    print(f"[CHAT DEBUG] Received {len(payload.messages)} messages, total content length: {total_content_length}")
 
     system_prompt = {
         "role": "system",
-        "content": """你是一位专业的地震学专家助手，具备以下能力：
+        "content": """你是一位严谨的地震学专家助手。
 
-1. **数据分析能力**：当用户提供地震数据背景时，你可以：
-   - 总结地震分布特征（时间、空间、震级分布）
-   - 找出最大/最小震级的地震及其位置
-   - 分析地震活动的规律和趋势
-   - 解释特定地区地震频发的原因
+【核心规则 - 必须严格遵守】
+1. **禁止编造数据**：回答必须100%基于用户提供的【当前地图上的地震数据背景】
+2. **引用具体条目**：提及地震时必须引用具体的排名序号、地点、震级、时间
+3. **承认数据限制**：如果问题超出提供的数据范围，明确说明"根据您提供的数据无法确定"
+4. **区分数据与知识**：地震科普问题可以用专业知识回答，但数据分析必须基于实际数据
 
-2. **科普知识能力**：你可以解答：
-   - 地震的成因、类型、测量方法
-   - 地震安全和应急知识
-   - 历史著名地震事件
-   - 地震相关的专业术语
+【数据分析能力】
+- 总结地震分布特征（时间、空间、震级分布）
+- 找出最大/最小震级的地震及其位置
+- 统计不同震级区间的数量
+- 分析地震活动的规律和趋势
 
-3. **回答规则**：
-   - 如果用户询问数据相关问题（如"总结一下"、"最大的在哪"），请基于【当前地图上的地震数据背景】回答
-   - 如果没有数据背景但用户询问数据，请回复："您还没有查询过地震数据，请先在顶部搜索框输入查询条件（如"日本最近的地震"），然后我可以帮您分析。"
-   - 如果是纯知识性问题，直接回答即可
-   - 使用简洁、专业但易懂的中文回答
-   - 在分析数据时，可以适当指出有趣的发现或规律"""
+【回答格式】
+- 回答数据问题时，引用格式：如"第X条：地点XX，震级X.X级"
+- 使用简洁、专业但易懂的中文
+- 如果没有数据背景但用户询问数据，请回复："请先在顶部搜索框查询地震数据，然后我可以帮您分析。\""""
     }
     messages.insert(0, system_prompt)
 
@@ -804,11 +806,22 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
         "messages": messages,
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"LLM error: {resp.status_code}")
-        result = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
+            print(f"[CHAT DEBUG] LLM response status: {resp.status_code}")
+            if resp.status_code != 200:
+                error_text = resp.text[:500]
+                print(f"[CHAT DEBUG] LLM error response: {error_text}")
+                raise HTTPException(status_code=502, detail=f"LLM error: {resp.status_code} - {error_text}")
+            result = resp.json()
+    except httpx.TimeoutException as e:
+        print(f"[CHAT DEBUG] Timeout error: {e}")
+        raise HTTPException(status_code=504, detail=f"LLM request timeout: {e}")
+    except httpx.RequestError as e:
+        print(f"[CHAT DEBUG] Request error: {e}")
+        raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
 
     reply = result["choices"][0]["message"]["content"]
+    print(f"[CHAT DEBUG] Success, reply length: {len(reply)}")
     return ChatResponse(reply=reply)

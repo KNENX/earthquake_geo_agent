@@ -105,13 +105,13 @@ function getHeatmapPoints(features) {
 function downloadFile(content, fileName, mimeType) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
-  
+
   const a = document.createElement('a');
   a.href = url;
   a.download = fileName;
   document.body.appendChild(a);
   a.click();
-  
+
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -120,12 +120,12 @@ function downloadFile(content, fileName, mimeType) {
 function convertToCSV(features) {
   // Define CSV headers
   const headers = ['Time', 'Magnitude', 'Place', 'Depth (km)', 'Latitude', 'Longitude', 'USGS ID', 'URL'];
-  
+
   // Map features to rows
   const rows = features.map(f => {
     const p = f.properties;
     const c = f.geometry.coordinates;
-    
+
     // Handle potential nulls and formatting
     const time = new Date(p.time).toISOString();
     const mag = p.mag || 0;
@@ -135,10 +135,10 @@ function convertToCSV(features) {
     const lon = c[0];
     const id = f.id;
     const url = p.url;
-    
+
     return [time, mag, place, depth, lat, lon, id, url].join(',');
   });
-  
+
   // Combine header and rows
   return [headers.join(',')].concat(rows).join('\n');
 }
@@ -213,17 +213,30 @@ function updateQueryContext(userQuery, plan, geojson, stats) {
 }
 
 // Build a context-aware message for the AI
+// Only inject context for the FIRST message after a new query to avoid token waste
 function buildContextAwareMessage(userMessage) {
-  if (!lastQueryContext || lastQueryContext.totalCount === 0) {
+  // Check if we have context and if it hasn't been sent yet
+  if (!lastQueryContext || lastQueryContext.totalCount === 0 || lastQueryContext.contextSent) {
     return {
       hasContext: false,
       content: userMessage
     };
   }
 
-  const featureList = lastQueryContext.features.map(f =>
+  // Mark context as sent so we don't repeat it
+  lastQueryContext.contextSent = true;
+
+  // With GLM-4.7 (200K context), we can send up to 100 earthquakes for comprehensive analysis
+  const MAX_FEATURES_FOR_CHAT = 100;
+  const limitedFeatures = lastQueryContext.features.slice(0, MAX_FEATURES_FOR_CHAT);
+  const featureList = limitedFeatures.map(f =>
     `${f.rank}. ${f.place} | 震级:${f.mag} | 深度:${f.depth}km | 时间:${f.time}`
   ).join('\n');
+
+  // Build truncation note if needed
+  const truncationNote = lastQueryContext.totalCount > MAX_FEATURES_FOR_CHAT
+    ? `\n（注：仅显示前 ${MAX_FEATURES_FOR_CHAT} 条数据，完整共 ${lastQueryContext.totalCount} 条）`
+    : '';
 
   const contextMessage = `【当前地图上的地震数据背景】
 用户查询：${lastQueryContext.userQuery}
@@ -233,7 +246,7 @@ function buildContextAwareMessage(userMessage) {
 结果统计：共 ${lastQueryContext.totalCount} 次地震，最大震级 ${lastQueryContext.maxMagnitude}
 
 详细数据列表（按震级排序）：
-${featureList}
+${featureList}${truncationNote}
 
 ---
 【用户当前问题】：${userMessage}`;
@@ -434,10 +447,16 @@ async function sendChatMessage() {
   container.scrollTop = container.scrollHeight;
 
   try {
+    // Trim history to prevent token overflow (keep only last 10 turns = 20 messages)
+    const MAX_HISTORY_MESSAGES = 20;
+    const trimmedHistory = chatHistory.length > MAX_HISTORY_MESSAGES
+      ? chatHistory.slice(-MAX_HISTORY_MESSAGES)
+      : chatHistory;
+
     const resp = await fetch(`${BACKEND_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: chatHistory }),
+      body: JSON.stringify({ messages: trimmedHistory }),
     });
 
     // Remove loading indicator
@@ -616,7 +635,7 @@ function renderGeoJSON(geojson, plan) {
         // HeatLayer doesn't have getBounds, need to calculate manually or skip
         if (!isHeatmapMode) map.fitBounds(layer.getBounds().pad(0.1));
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 }
 
@@ -1076,14 +1095,14 @@ legend.addTo(map);
 // --- Custom Heatmap Control ---
 const heatControl = L.control({ position: 'topright' });
 
-heatControl.onAdd = function(map) {
+heatControl.onAdd = function (map) {
   const div = L.DomUtil.create('div', 'leaflet-bar');
   const btn = L.DomUtil.create('button', 'custom-map-control', div);
   btn.innerHTML = '🔥'; // Fire emoji for Heatmap
   btn.title = '切换热力图模式';
   btn.id = 'btn-toggle-heat';
 
-  btn.onclick = function(e) {
+  btn.onclick = function (e) {
     L.DomEvent.stopPropagation(e); // Prevent map click
     toggleHeatmapMode();
   };
@@ -1151,13 +1170,13 @@ const exportOptions = document.querySelectorAll('.export-option');
 if (exportBtn) {
   exportBtn.addEventListener('click', (e) => {
     e.stopPropagation(); // Prevent document click from closing it immediately
-    
+
     // Check if we have data to export
     if (!currentFeatures || currentFeatures.length === 0) {
       alert('暂无数据可导出，请先查询地震数据。');
       return;
     }
-    
+
     exportMenu.classList.toggle('hidden');
   });
 }
@@ -1175,7 +1194,7 @@ exportOptions.forEach(opt => {
     const type = opt.dataset.type;
     const timestamp = new Date().toISOString().slice(0, 10);
     const fileName = `earthquakes_${timestamp}.${type}`; // e.g., earthquakes_2024-01-15.csv
-    
+
     if (type === 'csv') {
       const csvContent = convertToCSV(currentFeatures);
       downloadFile(csvContent, fileName, 'text/csv;charset=utf-8;');
@@ -1189,7 +1208,7 @@ exportOptions.forEach(opt => {
       const jsonContent = JSON.stringify(geojsonObj, null, 2);
       downloadFile(jsonContent, fileName, 'application/geo+json');
     }
-    
+
     // Close menu
     exportMenu.classList.add('hidden');
   });
