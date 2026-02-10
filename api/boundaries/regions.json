@@ -1,0 +1,163 @@
+{
+    "regions": {
+        "全球": {
+            "name_en": "Global",
+            "bbox": [
+                -180,
+                -90,
+                180,
+                90
+            ],
+            "aliases": [
+                "global",
+                "世界",
+                "地球",
+                "全世界"
+            ]
+        },
+        "亚洲": {
+            "name_en": "Asia",
+            "bbox": [
+                26.0,
+                -11.0,
+                169.0,
+                81.0
+            ],
+            "aliases": [
+                "asia",
+                "Asian"
+            ]
+        },
+        "欧洲": {
+            "name_en": "Europe",
+            "bbox": [
+                -10.0,
+                36.0,
+                60.0,
+                71.0
+            ],
+            "aliases": [
+                "europe",
+                "European"
+            ]
+        },
+        "非洲": {
+            "name_en": "Africa",
+            "bbox": [
+                -17.0,
+                -35.0,
+                51.0,
+                37.0
+            ],
+            "aliases": [
+                "africa",
+                "African"
+            ]
+        },
+        "北美洲": {
+            "name_en": "North America",
+            "bbox": [
+                -170.0,
+                15.0,
+                -50.0,
+                85.0
+            ],
+            "aliases": [
+                "north america",
+                "north american"
+            ]
+        },
+        "南美洲": {
+            "name_en": "South America",
+            "bbox": [
+                -82.0,
+                -56.0,
+                -34.0,
+                13.0
+            ],
+            "aliases": [
+                "south america",
+                "south american"
+            ]
+        },
+        "大洋洲": {
+            "name_en": "Oceania",
+            "bbox": [
+                110.0,
+                -50.0,
+                180.0,
+                0.0
+            ],
+            "aliases": [
+                "oceania",
+                "oceanian",
+                "australia continent"
+            ]
+        },
+        "南极洲": {
+            "name_en": "Antarctica",
+            "bbox": [
+                -180.0,
+                -90.0,
+                180.0,
+                -60.0
+            ],
+            "aliases": [
+                "antarctica",
+                "antarctic"
+            ]
+        },
+        "太平洋": {
+            "name_en": "Pacific Ocean",
+            "bbox": [
+                100.0,
+                -60.0,
+                -70.0,
+                60.0
+            ],
+            "aliases": [
+                "pacific ocean",
+                "pacific"
+            ]
+        },
+        "大西洋": {
+            "name_en": "Atlantic Ocean",
+            "bbox": [
+                -80.0,
+                -60.0,
+                20.0,
+                70.0
+            ],
+            "aliases": [
+                "atlantic ocean",
+                "atlantic"
+            ]
+        },
+        "印度洋": {
+            "name_en": "Indian Ocean",
+            "bbox": [
+                20.0,
+                -50.0,
+                120.0,
+                30.0
+            ],
+            "aliases": [
+                "indian ocean",
+                "indian"
+            ]
+        },
+        "北冰洋": {
+            "name_en": "Arctic Ocean",
+            "bbox": [
+                -180.0,
+                60.0,
+                180.0,
+                90.0
+            ],
+            "aliases": [
+                "arctic ocean",
+                "arctic"
+            ]
+        }
+    }
+}

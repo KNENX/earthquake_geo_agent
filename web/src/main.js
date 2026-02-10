@@ -1,9 +1,10 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet.heat";
+import Chart from "chart.js/auto";
 import "./style.css";
 
-const BACKEND_BASE = "http://127.0.0.1:3333";
+const BACKEND_BASE = "http://127.0.0.1:8000";
 const STORAGE_KEY_SEARCH = 'earthquake_search_history';
 const STORAGE_KEY_CHAT = 'earthquake_chat_history';
 
@@ -226,34 +227,53 @@ function buildContextAwareMessage(userMessage) {
   // Mark context as sent so we don't repeat it
   lastQueryContext.contextSent = true;
 
-  // With GLM-4.7 (200K context), we can send up to 100 earthquakes for comprehensive analysis
-  const MAX_FEATURES_FOR_CHAT = 100;
-  const limitedFeatures = lastQueryContext.features.slice(0, MAX_FEATURES_FOR_CHAT);
-  const featureList = limitedFeatures.map(f =>
-    `${f.rank}. ${f.place} | 震级:${f.mag} | 深度:${f.depth}km | 时间:${f.time}`
-  ).join('\n');
+  // Use backend pre-computed stats if available (New Strategy: Data Summarization)
+  const stats = lastQueryContext.stats || {};
+  let contextContent = "";
 
-  // Build truncation note if needed
-  const truncationNote = lastQueryContext.totalCount > MAX_FEATURES_FOR_CHAT
-    ? `\n（注：仅显示前 ${MAX_FEATURES_FOR_CHAT} 条数据，完整共 ${lastQueryContext.totalCount} 条）`
-    : '';
+  if (stats.top_20 && stats.dist_mag) {
+    // 1. Distribution
+    const dist = stats.dist_mag;
+    const distStr = `3-4级:${dist["3.0-4.0"]}次, 4-5级:${dist["4.0-5.0"]}次, 5-6级:${dist["5.0-6.0"]}次, 6-7级:${dist["6.0-7.0"]}次, 7级以上:${dist["7.0+"]}次`;
 
-  const contextMessage = `【当前地图上的地震数据背景】
+    // 2. Top 20 List
+    const top20Str = stats.top_20.map((f, index) =>
+      `${index + 1}. ${f.place} | 震级:${f.mag} | 深度:${f.depth}km | 时间:${f.time_str}`
+    ).join('\n');
+
+    contextContent = `【当前地图上的地震数据背景】
 用户查询：${lastQueryContext.userQuery}
 查询时间：${lastQueryContext.timestamp}
-时间范围：${lastQueryContext.timeRange}
-查询区域：${lastQueryContext.region}
-结果统计：共 ${lastQueryContext.totalCount} 次地震，最大震级 ${lastQueryContext.maxMagnitude}
+数据统计：共 ${stats.count} 次地震
+- 最大震级：${stats.max_magnitude}
+- 平均震级：${stats.avg_magnitude ? stats.avg_magnitude.toFixed(2) : 'N/A'}
+- 震级分布：${distStr}
 
-详细数据列表（按震级排序）：
-${featureList}${truncationNote}
+【Top 20 最强地震列表】（Backend Optimized）：
+${top20Str}
 
----
-【用户当前问题】：${userMessage}`;
+（注：系统已进行数据预压缩，仅提供统计和 Top 20 供分析）`;
+  } else {
+    // Fallback if backend stats missing (Legacy behavior)
+    const MAX_FEATURES_FOR_CHAT = 20;
+    const limitedFeatures = lastQueryContext.features.slice(0, MAX_FEATURES_FOR_CHAT);
+    const featureList = limitedFeatures.map(f =>
+      `${f.rank}. ${f.place} | 震级:${f.mag} | 深度:${f.depth}km | 时间:${f.time}`
+    ).join('\n');
+
+    contextContent = `【当前地图上的地震数据背景】
+用户查询：${lastQueryContext.userQuery}
+查询时间：${lastQueryContext.timestamp}
+统计：共 ${lastQueryContext.totalCount} 次，最大 ${lastQueryContext.maxMagnitude}
+列表：
+${featureList}`;
+  }
+
+  const finalMessage = `${contextContent}\n\n---\n【用户当前问题】：${userMessage}`;
 
   return {
     hasContext: true,
-    content: contextMessage
+    content: finalMessage
   };
 }
 
@@ -401,15 +421,32 @@ function setupCollapsibles() {
 }
 
 // --- Chat Functions ---
-function addChatBubble(role, text) {
+function addChatBubble(role, text, thinkingTime = null) {
   const container = document.getElementById("chat-messages");
   if (!container) return;
 
   const bubble = document.createElement("div");
   bubble.className = `chat-bubble ${role === "user" ? "user" : "ai"}`;
-  bubble.textContent = text;
-  container.appendChild(bubble);
+  bubble.style.userSelect = "text";  // Make content selectable/copyable
+  bubble.style.cursor = "text";
 
+  // Main text content
+  const textSpan = document.createElement("span");
+  textSpan.textContent = text;
+  bubble.appendChild(textSpan);
+
+  // Add thinking time for AI responses
+  if (role === "ai" && thinkingTime !== null) {
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "thinking-time";
+    timeSpan.textContent = ` (思考 ${thinkingTime.toFixed(1)}s)`;
+    timeSpan.style.fontSize = "0.8em";
+    timeSpan.style.opacity = "0.6";
+    timeSpan.style.marginLeft = "8px";
+    bubble.appendChild(timeSpan);
+  }
+
+  container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
 }
 
@@ -453,11 +490,17 @@ async function sendChatMessage() {
       ? chatHistory.slice(-MAX_HISTORY_MESSAGES)
       : chatHistory;
 
+    // Record start time for thinking duration
+    const startTime = performance.now();
+
     const resp = await fetch(`${BACKEND_BASE}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: trimmedHistory }),
     });
+
+    // Calculate thinking time
+    const thinkingTime = (performance.now() - startTime) / 1000;
 
     // Remove loading indicator
     document.getElementById("chat-loading")?.remove();
@@ -468,8 +511,8 @@ async function sendChatMessage() {
 
     const data = await resp.json();
 
-    // Show AI response
-    addChatBubble("ai", data.reply);
+    // Show AI response with thinking time
+    addChatBubble("ai", data.reply, thinkingTime);
 
     // Add AI response to history
     chatHistory.push({ role: "assistant", content: data.reply });
@@ -964,15 +1007,15 @@ async function runNLQuery() {
     if (!resp.ok) throw new Error(await resp.text());
     const payload = await resp.json();
 
+    // Save successful query to history first (before rendering which might fail)
+    saveSearchHistory(q);
+
     renderGeoJSON(payload.geojson, payload.plan);
     updateInfoPanel(payload);
     updateQueryContext(q, payload.plan, payload.geojson, payload.stats);
 
     // Save plan for heatmap toggle
     window.lastPlan = payload.plan;
-
-    // Save successful query to history
-    saveSearchHistory(q);
 
   } catch (e) {
     alert(`查询出错: ${e.message}`);
@@ -1072,25 +1115,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// 6. 添加图例
-const legend = L.control({ position: "bottomright" });
-legend.onAdd = function () {
-  const div = L.DomUtil.create("div", "info legend");
-  div.style.background = "white";
-  div.style.padding = "10px";
-  div.style.borderRadius = "5px";
-  div.style.boxShadow = "0 0 15px rgba(0,0,0,0.2)";
-  div.style.fontSize = "12px";
-  div.style.lineHeight = "1.5";
-  div.innerHTML = `
-    <div style="font-weight:bold; margin-bottom:5px">震级 (Magnitude)</div>
-    <div><span style="background:#7a0177; width:10px; height:10px; display:inline-block; border-radius:50%; margin-right:5px"></span> ≥ 7 (大灾难)</div>
-    <div><span style="background:#dd3497; width:10px; height:10px; display:inline-block; border-radius:50%; margin-right:5px"></span> 5 - 7 (强震)</div>
-    <div><span style="background:#fcc5c0; width:10px; height:10px; display:inline-block; border-radius:50%; margin-right:5px"></span> < 5 (轻微)</div>
-  `;
-  return div;
-};
-legend.addTo(map);
+// Legend removed per user request
 
 // --- Custom Heatmap Control ---
 const heatControl = L.control({ position: 'topright' });

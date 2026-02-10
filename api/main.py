@@ -76,6 +76,232 @@ def _llm_cache_set(key: str, val: Dict[str, Any]) -> None:
     _LLM_PLAN_CACHE[key] = (time.time() + LLM_PLAN_TTL_SECONDS, val)
 
 # -----------------------------
+# Region Boundaries (GADM + Natural Earth)
+# -----------------------------
+BOUNDARIES_DIR = Path(__file__).resolve().parent / "boundaries"
+GADM_FILE = BOUNDARIES_DIR / "gadm41_CHN.gpkg"
+NE_COUNTRIES_FILE = BOUNDARIES_DIR / "natural_earth" / "ne_10m_admin_0_countries.shp"
+REGIONS_JSON = BOUNDARIES_DIR / "regions.json"
+
+# Loaded data - organized by specificity (cities > provinces > countries)
+_CHINA_CITIES: Dict[str, Any] = {}     # GADM ADM_2 (市级)
+_CHINA_PROVINCES: Dict[str, Any] = {}  # GADM ADM_1 (省级)
+_COUNTRIES: Dict[str, Any] = {}        # Natural Earth (国家级)
+_SPECIAL_REGIONS: Dict[str, Any] = {}  # From regions.json (全球 etc)
+
+# Chinese name mapping for countries
+COUNTRY_NAME_ZH = {
+    "Japan": "日本", "India": "印度", "Indonesia": "印尼", "Philippines": "菲律宾",
+    "Turkey": "土耳其", "Iran": "伊朗", "Pakistan": "巴基斯坦", "Afghanistan": "阿富汗",
+    "Nepal": "尼泊尔", "Chile": "智利", "Peru": "秘鲁", "Mexico": "墨西哥",
+    "New Zealand": "新西兰", "Italy": "意大利", "Greece": "希腊",
+    "United States of America": "美国", "Russia": "俄罗斯", "Australia": "澳大利亚",
+    "Papua New Guinea": "巴布亚新几内亚", "Taiwan": "台湾",
+}
+
+def _load_regions() -> None:
+    """Load region boundaries from GADM and Natural Earth."""
+    global _CHINA_CITIES, _CHINA_PROVINCES, _COUNTRIES, _SPECIAL_REGIONS
+    
+    # 1. Load special regions (Continents, Oceans, Global)
+    try:
+        if REGIONS_JSON.exists():
+            with open(REGIONS_JSON, "r", encoding="utf-8") as f:
+                _SPECIAL_REGIONS = json.load(f).get("regions", {})
+            print(f"[GEO] Loaded {len(_SPECIAL_REGIONS)} special regions from JSON")
+    except Exception as e:
+        print(f"[GEO] Failed to load regions.json: {e}")
+    
+    # 2. Load GADM China: provinces (ADM_1) and cities (ADM_2)
+    try:
+        if GADM_FILE.exists():
+            import geopandas as gpd
+            
+            # Load provinces (ADM_1)
+            gdf_prov = gpd.read_file(GADM_FILE, layer="ADM_ADM_1")
+            for _, row in gdf_prov.iterrows():
+                name_en = row.get("NAME_1", "")
+                name_zh = row.get("NL_NAME_1", "") or ""
+                geometry = row.geometry
+                bounds = geometry.bounds
+                
+                data = {
+                    "geometry": geometry,
+                    "bbox": [bounds[0], bounds[1], bounds[2], bounds[3]],
+                    "level": "province"
+                }
+                _CHINA_PROVINCES[name_en] = data
+                # Index by Chinese names
+                if name_zh:
+                    for part in name_zh.split("|"):
+                        part = part.strip()
+                        if part:
+                            _CHINA_PROVINCES[part] = data
+            
+            print(f"[GEO] Loaded {len(gdf_prov)} China provinces from GADM")
+            
+            # Load cities (ADM_2)
+            gdf_city = gpd.read_file(GADM_FILE, layer="ADM_ADM_2")
+            for _, row in gdf_city.iterrows():
+                name_en = row.get("NAME_2", "")
+                name_zh = row.get("NL_NAME_2", "") or ""
+                geometry = row.geometry
+                bounds = geometry.bounds
+                
+                data = {
+                    "geometry": geometry,
+                    "bbox": [bounds[0], bounds[1], bounds[2], bounds[3]],
+                    "level": "city"
+                }
+                _CHINA_CITIES[name_en] = data
+                if name_zh:
+                    for part in name_zh.split("|"):
+                        part = part.strip()
+                        if part:
+                            _CHINA_CITIES[part] = data
+            
+            print(f"[GEO] Loaded {len(gdf_city)} China cities from GADM")
+    except Exception as e:
+        print(f"[GEO] Failed to load GADM: {e}")
+    
+    # 3. Load Natural Earth countries
+    try:
+        if NE_COUNTRIES_FILE.exists():
+            import geopandas as gpd
+            gdf_countries = gpd.read_file(NE_COUNTRIES_FILE)
+            for _, row in gdf_countries.iterrows():
+                name_en = row.get("NAME", "") or row.get("ADMIN", "")
+                if not name_en:
+                    continue
+                geometry = row.geometry
+                bounds = geometry.bounds
+                
+                data = {
+                    "geometry": geometry,
+                    "bbox": [bounds[0], bounds[1], bounds[2], bounds[3]],
+                    "level": "country"
+                }
+                _COUNTRIES[name_en] = data
+                # Add Chinese name mapping
+                if name_en in COUNTRY_NAME_ZH:
+                    _COUNTRIES[COUNTRY_NAME_ZH[name_en]] = data
+            
+            print(f"[GEO] Loaded {len(gdf_countries)} countries from Natural Earth")
+    except Exception as e:
+        print(f"[GEO] Failed to load Natural Earth: {e}")
+
+def find_region_bbox(user_query: str) -> Optional[Tuple[str, List[float], Any]]:
+    """Find matching region bbox from user query.
+    Returns (region_name, bbox, geometry) or None if no match.
+    Priority: cities > provinces > countries > special regions
+    """
+    # 1. Check China cities first (most specific)
+    for name, data in _CHINA_CITIES.items():
+        if name in user_query:
+            return (name, data["bbox"], data["geometry"])
+    
+    # 2. Check China provinces
+    for name, data in _CHINA_PROVINCES.items():
+        if name in user_query:
+            return (name, data["bbox"], data["geometry"])
+    
+    # 3. Check countries (Natural Earth)
+    for name, data in _COUNTRIES.items():
+        if name in user_query:
+            return (name, data["bbox"], data["geometry"])
+    
+    # 4. Check special regions (全球 etc)
+    for region_name, data in _SPECIAL_REGIONS.items():
+        if region_name in user_query:
+            return (region_name, data["bbox"], None)
+    
+    return None
+
+def filter_earthquakes_by_region(earthquakes: List[Dict], target_region: str, geometry: Any = None) -> List[Dict]:
+    """Filter earthquakes to only include those in target region.
+    Uses polygon geometry if available (GADM), otherwise falls back to text matching.
+    """
+    if not target_region or target_region == "全球":
+        return earthquakes
+    
+    from shapely.geometry import Point
+    
+    # If we have actual geometry, use polygon containment
+    if geometry is not None:
+        filtered = []
+        for eq in earthquakes:
+            coords = eq.get("geometry", {}).get("coordinates", [])
+            if len(coords) >= 2:
+                lon, lat = coords[0], coords[1]
+                point = Point(lon, lat)
+                if geometry.contains(point):
+                    filtered.append(eq)
+        
+        if filtered:
+            print(f"[GEO] Polygon filter: {len(earthquakes)} -> {len(filtered)} for '{target_region}'")
+            return filtered
+        else:
+            print(f"[GEO] Polygon filter returned 0, falling back to text match")
+    
+    # Check if we have a bbox for special regions (continents/oceans)
+    if target_region in _SPECIAL_REGIONS:
+        bbox = _SPECIAL_REGIONS[target_region]["bbox"]
+        min_lon, min_lat, max_lon, max_lat = bbox
+        
+        filtered = []
+        for eq in earthquakes:
+            coords = eq.get("geometry", {}).get("coordinates", [])
+            if len(coords) >= 2:
+                lon, lat = coords[0], coords[1]
+                
+                # Latitude check
+                if not (min_lat <= lat <= max_lat):
+                    continue
+                
+                # Longitude check (handle 180 crossing if min > max)
+                if min_lon <= max_lon:
+                    # Normal case
+                    if min_lon <= lon <= max_lon:
+                        filtered.append(eq)
+                else:
+                    # Crosses dateline (e.g. Pacific: 100 to -70)
+                    if lon >= min_lon or lon <= max_lon:
+                        filtered.append(eq)
+        
+        if filtered:
+            print(f"[GEO] BBox filter: {len(earthquakes)} -> {len(filtered)} for '{target_region}'")
+            return filtered
+        else:
+            print(f"[GEO] BBox filter returned 0, falling back to text match")
+
+    # Fallback: text-based filtering using USGS place field
+    # Just use target_region name for matching (no alias lookup needed)
+    search_terms = [target_region.lower()]
+    # Add reverse mapping for countries (if user used Chinese but USGS uses English)
+    for en_name, zh_name in COUNTRY_NAME_ZH.items():
+        if zh_name == target_region:
+            search_terms.append(en_name.lower())
+            break
+    
+    filtered = []
+    for eq in earthquakes:
+        place = eq.get("properties", {}).get("place", "").lower()
+        if any(term in place for term in search_terms):
+            filtered.append(eq)
+    
+    if filtered:
+        print(f"[GEO] Text filter: {len(earthquakes)} -> {len(filtered)} for '{target_region}'")
+    else:
+        print(f"[GEO] Warning: All filters returned 0 for '{target_region}'")
+        return earthquakes  # Return original if nothing matched
+    
+    return filtered
+
+
+# Load regions on startup
+_load_regions()
+
+# -----------------------------
 # Logging (JSONL)
 # -----------------------------
 LOG_DIR = Path(__file__).resolve().parent / "logs"
@@ -128,20 +354,74 @@ def _iso_utc(dt_utc: datetime) -> str:
     return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
-    features = geojson.get("features")
-    count = len(features) if isinstance(features, list) else 0
+    """Compute rich statistics for Chat summary to avoid sending full list."""
+    features = geojson.get("features", [])
+    if not isinstance(features, list):
+        features = []
+    
+    count = len(features)
+    if count == 0:
+        return {"count": 0, "max_magnitude": None}
 
     mags = []
-    if isinstance(features, list):
-        for f in features:
-            p = f.get("properties") or {}
-            mag = p.get("mag")
-            if isinstance(mag, (int, float)):
-                mags.append(float(mag))
+    depths = []
+    valid_features = []
+
+    for f in features:
+        props = f.get("properties") or {}
+        geom = f.get("geometry") or {}
+        coords = geom.get("coordinates", [])
+        
+        mag = props.get("mag")
+        # Depth is 3rd coordinate in km
+        depth = coords[2] if len(coords) > 2 else 0
+        
+        if isinstance(mag, (int, float)):
+            mags.append(float(mag))
+            depths.append(float(depth))
+            valid_features.append({
+                "mag": float(mag),
+                "place": props.get("place", "Unknown"),
+                "time": props.get("time"), # timestamp ms
+                "depth": float(depth),
+                "url": props.get("url")
+            })
+
+    if not mags:
+        return {"count": count, "max_magnitude": None}
+
+    # Sort by magnitude descending
+    valid_features.sort(key=lambda x: x["mag"], reverse=True)
+    top_20 = valid_features[:20]
+
+    # Convert timestamps to readable string for Top 20
+    for item in top_20:
+        if item["time"]:
+            try:
+                dt = datetime.fromtimestamp(item["time"] / 1000, tz=timezone.utc)
+                item["time_str"] = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except:
+                item["time_str"] = str(item["time"])
+
+    # Magnitude distribution
+    dist_mag = {
+        "3.0-4.0": len([m for m in mags if 3.0 <= m < 4.0]),
+        "4.0-5.0": len([m for m in mags if 4.0 <= m < 5.0]),
+        "5.0-6.0": len([m for m in mags if 5.0 <= m < 6.0]),
+        "6.0-7.0": len([m for m in mags if 6.0 <= m < 7.0]),
+        "7.0+": len([m for m in mags if m >= 7.0]),
+    }
 
     return {
         "count": count,
-        "max_magnitude": max(mags) if mags else None,
+        "max_magnitude": max(mags),
+        "min_magnitude": min(mags),
+        "avg_magnitude": sum(mags) / len(mags),
+        "dist_mag": dist_mag,
+        "max_depth": max(depths) if depths else 0,
+        "min_depth": min(depths) if depths else 0,
+        "avg_depth": sum(depths) / len(depths) if depths else 0,
+        "top_20": top_20
     }
 
 # -----------------------------
@@ -275,6 +555,25 @@ def validate_plan(plan: NLPlan) -> NLPlan:
     # -------------------------------
 
     # 2. 数量限制校验
+    # 策略：如果时间跨度 > 30 天，强制 limit 至少 500，以保证数据完整性
+    time_span_days = 0
+    if plan.window_value and plan.window_unit == 'days':
+        time_span_days = plan.window_value
+    elif plan.window_value and plan.window_unit == 'hours':
+        time_span_days = plan.window_value / 24
+    elif plan.starttime and plan.endtime:
+        try:
+            # 简单估算
+            s = datetime.fromisoformat(plan.starttime.replace("Z", ""))
+            e = datetime.fromisoformat(plan.endtime.replace("Z", ""))
+            time_span_days = (e - s).days
+        except:
+            pass
+    
+    if time_span_days > 30:
+        if plan.limit < 500:
+            plan.limit = 500
+    
     plan.limit = _clamp_int(plan.limit, 1, 500)
 
     # 3. 震级范围归一化 (0-10)
@@ -435,13 +734,15 @@ Schema:
   "mindepth": number | null,
   "maxdepth": number | null,
   
-  "limit": integer, // 默认 100
+  "limit": integer, // 默认为100；查询时间超过30天时必须设为500
   "orderby": "time" | "magnitude"
 }}
 
 【处理规则 (严格执行)】
 
-1. **时间处理**:
+1. **Limit 限制**:
+   - 默认查询较短时间时，limit=100 (按时间排序)
+   - **长周期查询 (>1个月)**：limit=500, orderby="magnitude" (优先看大震)
    - **相对时间**: 
      - "过去3天" -> window_unit="days", window_value=3
      - "过去24小时" -> window_unit="hours", window_value=24
@@ -503,15 +804,15 @@ JSON: {{
 
 
 # -----------------------------
-# LLM call (Query - uses lightweight model for speed)
+# LLM call (Query - uses SiliconFlow Qwen for speed + Chinese)
 # -----------------------------
 async def llm_to_plan(nl: str) -> Tuple[NLPlan, bool]:
-    api_key = os.getenv("NVIDIA_API_KEY", "").strip()
-    base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
-    model = os.getenv("QUERY_MODEL", "meta/llama-3.1-8b-instruct").strip()
+    api_key = os.getenv("QUERY_API_KEY", "").strip()
+    base_url = os.getenv("QUERY_BASE_URL", "https://api.siliconflow.cn/v1").strip()
+    model = os.getenv("QUERY_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="Missing NVIDIA_API_KEY in api/.env")
+        raise HTTPException(status_code=500, detail="Missing QUERY_API_KEY in api/.env")
 
     llm_url = f"{base_url}/chat/completions"
 
@@ -604,6 +905,13 @@ async def llm_to_plan(nl: str) -> Tuple[NLPlan, bool]:
 # -----------------------------
 # USGS fetch (with cache)
 # -----------------------------
+async def _fetch_usgs_single(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch from USGS API for a single set of params."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(USGS_EVENT_QUERY_URL, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
 async def fetch_usgs(params: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     _cache_gc()
     key = _cache_key_from_params(params)
@@ -611,11 +919,55 @@ async def fetch_usgs(params: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     if cached is not None:
         return cached, True
 
+    # Check for dateline-crossing bbox (minlon > maxlon)
+    minlon = params.get("minlongitude")
+    maxlon = params.get("maxlongitude")
+    crosses_dateline = (minlon is not None and maxlon is not None and minlon > maxlon)
+
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(USGS_EVENT_QUERY_URL, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+        if crosses_dateline:
+            # Split into two queries: Western hemisphere [-180, maxlon] and Eastern [minlon, 180]
+            print(f"[USGS] Dateline crossing detected: {minlon} to {maxlon}. Splitting query.")
+            
+            params_west = params.copy()
+            params_west["minlongitude"] = -180.0
+            params_west["maxlongitude"] = maxlon
+            
+            params_east = params.copy()
+            params_east["minlongitude"] = minlon
+            params_east["maxlongitude"] = 180.0
+            
+            # Fetch both in parallel
+            import asyncio
+            data_west, data_east = await asyncio.gather(
+                _fetch_usgs_single(params_west),
+                _fetch_usgs_single(params_east)
+            )
+            
+            # Merge features
+            features_west = data_west.get("features", [])
+            features_east = data_east.get("features", [])
+            merged_features = features_west + features_east
+            
+            # Remove duplicates by event ID (if any edge case overlap)
+            seen_ids = set()
+            unique_features = []
+            for f in merged_features:
+                fid = f.get("id")
+                if fid not in seen_ids:
+                    seen_ids.add(fid)
+                    unique_features.append(f)
+            
+            # Build merged response
+            data = {
+                "type": "FeatureCollection",
+                "metadata": data_west.get("metadata", {}),
+                "features": unique_features
+            }
+            print(f"[USGS] Merged {len(features_west)} + {len(features_east)} = {len(unique_features)} features")
+        else:
+            data = await _fetch_usgs_single(params)
+            
     except httpx.TimeoutException as e:
         raise HTTPException(status_code=504, detail=f"USGS timeout: {e}") from e
     except httpx.HTTPStatusError as e:
@@ -666,6 +1018,11 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
     usgs_params: Optional[Dict[str, Any]] = None
 
     try:
+        # Detect region from user query for post-filtering
+        region_match = find_region_bbox(payload.query)
+        target_region = region_match[0] if region_match else None
+        region_geometry = region_match[2] if region_match else None
+        
         # LLM timing + cache
         t_llm0 = time.perf_counter()
         plan, llm_cache_hit = await llm_to_plan(payload.query)
@@ -676,11 +1033,34 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
 
         # Backend computes absolute times in UTC ISO
         usgs_params = plan_to_usgs_params(plan)
+        
+        # If we found a preset region bbox, use it instead of LLM bbox
+        if region_match:
+            preset_bbox = region_match[1]
+            usgs_params["minlongitude"] = preset_bbox[0]
+            usgs_params["minlatitude"] = preset_bbox[1]
+            usgs_params["maxlongitude"] = preset_bbox[2]
+            usgs_params["maxlatitude"] = preset_bbox[3]
+            print(f"[GEO] Using preset bbox for '{target_region}': {preset_bbox}")
+            
+            # 自动调整震级：如果是大区域（洲/洋），且用户未指定震级，则默认过滤掉小地震
+            # 避免 USGS 在美国本土的海量小地震淹没全球数据
+            # 判断依据：_SPECIAL_REGIONS 中包含所有洲和洋
+            if target_region in _SPECIAL_REGIONS:
+                 if usgs_params.get("minmagnitude") is None:
+                     print(f"[GEO] Large region '{target_region}' detected, auto-setting minmagnitude=4.5")
+                     usgs_params["minmagnitude"] = 4.5
 
         # USGS timing
         t_usgs0 = time.perf_counter()
         geo, cache_hit = await fetch_usgs(usgs_params)
         usgs_ms = int((time.perf_counter() - t_usgs0) * 1000)
+        
+        # Post-filter earthquakes by region (uses polygon if available)
+        if target_region and geo.get("features"):
+            original_count = len(geo["features"])
+            geo["features"] = filter_earthquakes_by_region(geo["features"], target_region, region_geometry)
+            geo["metadata"]["count"] = len(geo["features"])  # Update count
 
         total_ms = int((time.perf_counter() - t0) * 1000)
         stats = compute_stats(geo)
@@ -694,6 +1074,7 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
             "plan": plan.model_dump(),
             "usgs_params": usgs_params,
             "result": {"count": stats.get("count"), "max_magnitude": stats.get("max_magnitude")},
+            "region_filter": target_region,
         })
         _append_jsonl(record)
 
@@ -759,12 +1140,12 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
 @app.post("/api/chat")
 async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
     """Handle multi-turn chat conversations about earthquakes (uses large model)."""
-    api_key = os.getenv("NVIDIA_API_KEY", "").strip()
-    base_url = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
+    api_key = os.getenv("CHAT_API_KEY", "").strip()
+    base_url = os.getenv("CHAT_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
     model = os.getenv("CHAT_MODEL", "z-ai/glm4.7").strip()
 
     if not api_key:
-        raise HTTPException(status_code=500, detail="Missing NVIDIA_API_KEY")
+        raise HTTPException(status_code=500, detail="Missing CHAT_API_KEY")
 
     messages = [{"role": m.role, "content": m.content} for m in payload.messages]
     
@@ -777,19 +1158,19 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
         "content": """你是一位严谨的地震学专家助手。
 
 【核心规则 - 必须严格遵守】
-1. **禁止编造数据**：回答必须100%基于用户提供的【当前地图上的地震数据背景】
-2. **引用具体条目**：提及地震时必须引用具体的排名序号、地点、震级、时间
-3. **承认数据限制**：如果问题超出提供的数据范围，明确说明"根据您提供的数据无法确定"
-4. **区分数据与知识**：地震科普问题可以用专业知识回答，但数据分析必须基于实际数据
+1. **基于统计与Top20分析**：你接收到的数据是**统计摘要**（总数、分布、最值）和**Top 20 最强地震列表**。
+2. **禁止编造数据**：对于 Top 20 以外的地震细节，必须明确说明"数据未提供"。
+3. **宏观分析优先**：利用统计数据分析地震活动的整体趋势（如震级分布、频次）。
+4. **区分数据与知识**：地震科普问题可以用专业知识回答，但数据分析必须基于实际数据。
 
 【数据分析能力】
 - 总结地震分布特征（时间、空间、震级分布）
-- 找出最大/最小震级的地震及其位置
-- 统计不同震级区间的数量
+- 详细分析 Top 20 强震的特征
+- 统计不同震级区间的数量（基于提供的分布数据）
 - 分析地震活动的规律和趋势
 
 【回答格式】
-- 回答数据问题时，引用格式：如"第X条：地点XX，震级X.X级"
+- 回答数据问题时，引用格式：如"第X条（Top 20）：地点XX，震级X.X级"
 - 使用简洁、专业但易懂的中文
 - 如果没有数据背景但用户询问数据，请回复："请先在顶部搜索框查询地震数据，然后我可以帮您分析。\""""
     }

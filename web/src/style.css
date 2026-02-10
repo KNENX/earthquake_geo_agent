@@ -349,6 +349,15 @@ html {
   /* 避开顶部的搜索栏 */
 }
 
+/* Ensure layer control is clickable */
+.leaflet-top.leaflet-right {
+  z-index: 1001;
+}
+
+.leaflet-control-layers {
+  z-index: 1001;
+}
+
 /* 定位按钮样式 */
 #btn-locate {
   background: white;

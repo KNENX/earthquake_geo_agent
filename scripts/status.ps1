@@ -36,7 +36,7 @@ function Show-Status {
 
 Write-Host ""
 Write-Host "========== Service Status =========="
-Show-Status -pidFile $apiPidFile -name "API (Backend)" -url "http://127.0.0.1:3333"
+Show-Status -pidFile $apiPidFile -name "API (Backend)" -url "http://127.0.0.1:8000"
 Show-Status -pidFile $webPidFile -name "Web (Frontend)" -url "http://localhost:5173"
 
 Write-Host ""
