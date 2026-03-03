@@ -20,20 +20,28 @@ Write-Host "Project root: $ROOT"
 Write-Host ""
 
 # ---- Start API Backend ----
-if (Test-Path $apiPidFile) {
-  $existingPid = (Get-Content $apiPidFile | Select-Object -First 1).Trim()
-  $existingProc = Get-Process -Id ([int]$existingPid) -ErrorAction SilentlyContinue
-  if ($null -ne $existingProc) {
-    Write-Host "API (Backend): Already running (PID=$existingPid)"
-  }
-  else {
-    # Process dead but pid file exists, cleanup and restart
-    Remove-Item -Force $apiPidFile
-    Write-Host "API (Backend): Stale pid file detected, restarting..."
+$apiRunning = $false
+$apiPortConnections = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+if ($null -ne $apiPortConnections) {
+  Write-Host "API (Backend): Already running (Port 8000 is in use)"
+  $apiRunning = $true
+} else {
+  if (Test-Path $apiPidFile) {
+    $existingPid = (Get-Content $apiPidFile | Select-Object -First 1).Trim()
+    $existingProc = Get-Process -Id ([int]$existingPid) -ErrorAction SilentlyContinue
+    if ($null -ne $existingProc) {
+      Write-Host "API (Backend): Already running (PID=$existingPid)"
+      $apiRunning = $true
+    }
+    else {
+      # Process dead but pid file exists, cleanup and restart
+      Remove-Item -Force $apiPidFile
+      Write-Host "API (Backend): Stale pid file detected, restarting..."
+    }
   }
 }
 
-if (-not (Test-Path $apiPidFile)) {
+if (-not $apiRunning) {
   Write-Host "API (Backend): Starting..."
   $apiOutLog = Join-Path $PIDS_DIR "api.out.log"
   $apiErrLog = Join-Path $PIDS_DIR "api.err.log"
@@ -60,19 +68,27 @@ if (-not (Test-Path $apiPidFile)) {
 }
 
 # ---- Start Web Frontend ----
-if (Test-Path $webPidFile) {
-  $existingPid = (Get-Content $webPidFile | Select-Object -First 1).Trim()
-  $existingProc = Get-Process -Id ([int]$existingPid) -ErrorAction SilentlyContinue
-  if ($null -ne $existingProc) {
-    Write-Host "Web (Frontend): Already running (PID=$existingPid)"
-  }
-  else {
-    Remove-Item -Force $webPidFile
-    Write-Host "Web (Frontend): Stale pid file detected, restarting..."
+$webRunning = $false
+$webPortConnections = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
+if ($null -ne $webPortConnections) {
+  Write-Host "Web (Frontend): Already running (Port 5173 is in use)"
+  $webRunning = $true
+} else {
+  if (Test-Path $webPidFile) {
+    $existingPid = (Get-Content $webPidFile | Select-Object -First 1).Trim()
+    $existingProc = Get-Process -Id ([int]$existingPid) -ErrorAction SilentlyContinue
+    if ($null -ne $existingProc) {
+      Write-Host "Web (Frontend): Already running (PID=$existingPid)"
+      $webRunning = $true
+    }
+    else {
+      Remove-Item -Force $webPidFile
+      Write-Host "Web (Frontend): Stale pid file detected, restarting..."
+    }
   }
 }
 
-if (-not (Test-Path $webPidFile)) {
+if (-not $webRunning) {
   Write-Host "Web (Frontend): Starting..."
   $webOutLog = Join-Path $PIDS_DIR "web.out.log"
   $webErrLog = Join-Path $PIDS_DIR "web.err.log"

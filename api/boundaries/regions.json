@@ -158,6 +158,32 @@
                 "arctic ocean",
                 "arctic"
             ]
+        },
+        "北半球": {
+            "name_en": "Northern Hemisphere",
+            "bbox": [
+                -180.0,
+                0.0,
+                180.0,
+                90.0
+            ],
+            "aliases": [
+                "northern hemisphere",
+                "north hemisphere"
+            ]
+        },
+        "南半球": {
+            "name_en": "Southern Hemisphere",
+            "bbox": [
+                -180.0,
+                -90.0,
+                180.0,
+                0.0
+            ],
+            "aliases": [
+                "southern hemisphere",
+                "south hemisphere"
+            ]
         }
     }
 }

@@ -1,49 +1,57 @@
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
-import "leaflet.heat";
-import Chart from "chart.js/auto";
-import "./style.css";
+// Globals from CDN
+const L = window.L;
+const Chart = window.Chart;
 
 const BACKEND_BASE = "http://127.0.0.1:8000";
 const STORAGE_KEY_SEARCH = 'earthquake_search_history';
 const STORAGE_KEY_CHAT = 'earthquake_chat_history';
 
 // --- 1. 定义地图底图 (Base Layers) ---
-const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: "© OpenStreetMap",
+const darkMatter = L.tileLayer(
+  "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  {
+    maxZoom: 18,
+    attribution: "© CartoDB",
+  }
+);
+
+// Map that works well without VPN in mainland China
+const gaode = L.tileLayer("https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
+  maxZoom: 18,
+  attribution: "© 高德地图"
 });
 
 const satellite = L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   {
-    maxZoom: 19,
+    maxZoom: 18,
     attribution: "© Esri",
-  }
-);
-
-const darkMatter = L.tileLayer(
-  "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-  {
-    maxZoom: 19,
-    attribution: "© CartoDB",
   }
 );
 
 // --- 2. 初始化地图 & 图层控件 ---
 const map = L.map("map", {
-  center: [20, 0],
-  zoom: 2,
-  layers: [osm],
-  zoomControl: false
+  center: [35, 105], // Centered roughly on China/Asia for better initial Gaode view
+  zoom: 3,           // Zoomed in slightly to avoid missing zoom-2 tiles on Gaode
+  minZoom: 3,        // Prevent zooming out to see black borders
+  maxZoom: 18,
+  maxBounds: [
+    [-90, -280],     // 扩展东西经边界，留出空间显示边缘数据点
+    [90, 280]
+  ],
+  maxBoundsViscosity: 0.8, // 取消死板的边缘撞击，改为柔和回弹
+  worldCopyJump: false,     // Disable infinite horizontal scrolling
+  layers: [gaode], // Default to Light Mode (Gaode)
+  zoomControl: false,
+  attributionControl: false // Minimalist look
 });
 
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 const baseMaps = {
-  "普通地图": osm,
-  "卫星图像": satellite,
-  "深色模式": darkMatter,
+  "Standard Mode (Light)": gaode,
+  "Command Mode (Dark)": darkMatter,
+  "Satellite View": satellite,
 };
 L.control.layers(baseMaps).addTo(map);
 
@@ -63,13 +71,13 @@ let heatLayer = null;
 let isHeatmapMode = false;
 
 // --- 辅助函数 ---
+// Mag colors updated to match CSS variables for consistency
 function colorByMag(mag) {
-  if (mag >= 7) return "#7a0177";
-  if (mag >= 6) return "#ae017e";
-  if (mag >= 5) return "#dd3497";
-  if (mag >= 4) return "#f768a1";
-  if (mag >= 3) return "#fa9fb5";
-  return "#fcc5c0";
+  if (mag >= 7) return "#ef4444"; // mag-extreme
+  if (mag >= 6) return "#f97316"; // mag-high
+  if (mag >= 5) return "#eab308"; // mag-medium
+  if (mag >= 4) return "#22c55e"; // mag-low
+  return "#0ea5e9"; // accent-secondary (very low)
 }
 
 function radiusByMag(mag) {
@@ -95,9 +103,10 @@ function getHeatmapPoints(features) {
   return features.map(f => {
     const coords = f.geometry.coordinates; // [lon, lat, depth]
     const mag = f.properties.mag || 0;
-    // Intensity calculation: Normalize mag (e.g., mag 5 -> 0.62, mag 8 -> 1.0)
-    // Adjusted formula for better visibility
-    const intensity = Math.max(0.3, mag / 8.0);
+    // Intensity calculation: Enhanced formula for much better heatmap visibility
+    // Adjust base intensity and scale to make all points clearly visible
+    const intensity = Math.max(0.5, (mag + 1) / 8.0);
+    // console.log(`Point: [${coords[1]}, ${coords[0]}], Mag: ${mag}, Intensity: ${intensity}`);
     return [coords[1], coords[0], intensity];
   });
 }
@@ -207,6 +216,7 @@ function updateQueryContext(userQuery, plan, geojson, stats) {
       : `过去 ${plan.window_value} ${plan.window_unit === 'hours' ? '小时' : '天'}`,
     totalCount: stats.count,
     maxMagnitude: formatMag(stats.max_magnitude),
+    stats: stats, // BUG FIX: correctly capture full stats for backend optimized list
     features: featureSummaries
   };
 
@@ -326,11 +336,12 @@ function renderCharts(features) {
   const magDistribution = calculateMagDistribution(features);
   const depthDistribution = calculateDepthDistribution(features);
 
-  // Magnitude chart colors (warm colors: gray to red to purple)
-  const magColors = ['#d9d9d9', '#fee08b', '#fc8d59', '#e34a33', '#7a0177'];
+  // Magnitude chart colors matching map markers
+  const magColors = ['#0ea5e9', '#22c55e', '#eab308', '#f97316', '#ef4444'];
 
-  // Depth chart colors (cool colors: orange, blue, dark blue)
-  const depthColors = ['#fc8d59', '#4575b4', '#313695'];
+  // Depth chart colors: Using a distinct Purple/Pink palette (light to dark)
+  // to avoid confusion with magnitude colors and show clear depth progression
+  const depthColors = ['#e879f9', '#c026d3', '#701a75'];
 
   // Destroy existing charts if they exist
   if (magChart) {
@@ -351,7 +362,7 @@ function renderCharts(features) {
   // Chart options (shared)
   const chartOptions = {
     responsive: true,
-    maintainAspectRatio: true,
+    maintainAspectRatio: false, // Critical for flex containers
     plugins: {
       legend: {
         display: false
@@ -432,18 +443,49 @@ function addChatBubble(role, text, thinkingTime = null) {
 
   // Main text content
   const textSpan = document.createElement("span");
-  textSpan.textContent = text;
+  textSpan.className = "markdown-body";
+
+  // Use marked.js if available, otherwise fallback to plain text
+  if (window.marked) {
+    const rawHtml = window.marked.parse(text);
+    textSpan.innerHTML = window.DOMPurify ? window.DOMPurify.sanitize(rawHtml) : rawHtml;
+  } else {
+    textSpan.textContent = text;
+  }
   bubble.appendChild(textSpan);
 
-  // Add thinking time for AI responses
-  if (role === "ai" && thinkingTime !== null) {
-    const timeSpan = document.createElement("span");
-    timeSpan.className = "thinking-time";
-    timeSpan.textContent = ` (思考 ${thinkingTime.toFixed(1)}s)`;
-    timeSpan.style.fontSize = "0.8em";
-    timeSpan.style.opacity = "0.6";
-    timeSpan.style.marginLeft = "8px";
-    bubble.appendChild(timeSpan);
+  // Add highlight matching
+  if (window.hljs) {
+    textSpan.querySelectorAll('pre code').forEach((block) => {
+      window.hljs.highlightElement(block);
+    });
+  }
+
+  if (role === "ai") {
+    // Add thinking time for AI responses
+    if (thinkingTime !== null) {
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "thinking-time";
+      timeSpan.textContent = `生成时间 ${thinkingTime.toFixed(1)}s`;
+      timeSpan.style.fontSize = "0.7em";
+      timeSpan.style.opacity = "0.3";
+      timeSpan.style.marginLeft = "8px";
+      bubble.appendChild(timeSpan);
+    }
+
+    // Add copy button
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "chat-copy-btn";
+    copyBtn.title = "复制内容";
+    copyBtn.innerHTML = "📋";
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = copyBtn.innerHTML;
+        copyBtn.innerHTML = "✓";
+        setTimeout(() => copyBtn.innerHTML = orig, 2000);
+      });
+    };
+    bubble.appendChild(copyBtn);
   }
 
   container.appendChild(bubble);
@@ -464,65 +506,160 @@ async function sendChatMessage() {
   // Show user message in UI (original text, not the context-enhanced version)
   addChatBubble("user", text);
   input.value = "";
+  input.style.height = "auto"; // Reset textarea height
 
   // Build context-aware message
   const contextResult = buildContextAwareMessage(text);
 
   // Add to history (use the context-enhanced content for AI, but store original for display)
   chatHistory.push({ role: "user", content: contextResult.content, displayContent: text });
-
-  // Save to localStorage
   saveChatHistory();
 
-  // Show loading indicator
+  // Create thinking/streaming bubble
   const container = document.getElementById("chat-messages");
-  const loadingBubble = document.createElement("div");
-  loadingBubble.className = "chat-bubble loading";
-  loadingBubble.textContent = "思考中...";
-  loadingBubble.id = "chat-loading";
-  container.appendChild(loadingBubble);
+  const bubble = document.createElement("div");
+  bubble.className = "chat-bubble ai";
+  bubble.style.userSelect = "text";
+  bubble.style.cursor = "text";
+
+  const textSpan = document.createElement("span");
+  textSpan.className = "markdown-body";
+  textSpan.innerHTML = "<em class='loading-text'>思考中...</em>"; // Initial pulsing state
+  bubble.appendChild(textSpan);
+
+  container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
 
-  try {
-    // Trim history to prevent token overflow (keep only last 10 turns = 20 messages)
-    const MAX_HISTORY_MESSAGES = 20;
-    const trimmedHistory = chatHistory.length > MAX_HISTORY_MESSAGES
-      ? chatHistory.slice(-MAX_HISTORY_MESSAGES)
-      : chatHistory;
+  let fullReply = "";
+  const startTime = performance.now();
 
-    // Record start time for thinking duration
-    const startTime = performance.now();
+  try {
+    // Dynamic history truncation based on total character count (approx token limit)
+    const MAX_CHAR_LIMIT = 30000; // Increased to handle roughly 10-15 rounds of rich context
+    let trimmedHistory = [];
+    let currentCharCount = 0;
+
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+      const msgLength = chatHistory[i].content ? chatHistory[i].content.length : 0;
+      if (currentCharCount + msgLength > MAX_CHAR_LIMIT && trimmedHistory.length > 0) {
+        break;
+      }
+      trimmedHistory.unshift(chatHistory[i]);
+      currentCharCount += msgLength;
+    }
+
+    if (trimmedHistory.length < chatHistory.length) {
+      // Prevent duplicate notices appearing back-to-back
+      const lastElement = container.children[container.children.length - 2];
+      if (!lastElement || lastElement.className !== "chat-system-notice") {
+        const warningDiv = document.createElement("div");
+        warningDiv.className = "chat-system-notice";
+        warningDiv.innerHTML = "⚠️ 早期上下文因过长已折叠，建议点击左上角 🗑️ 开启新话题";
+        container.insertBefore(warningDiv, bubble);
+      }
+    }
 
     const resp = await fetch(`${BACKEND_BASE}/api/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream" // Ask for stream
+      },
       body: JSON.stringify({ messages: trimmedHistory }),
     });
-
-    // Calculate thinking time
-    const thinkingTime = (performance.now() - startTime) / 1000;
-
-    // Remove loading indicator
-    document.getElementById("chat-loading")?.remove();
 
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`);
     }
 
-    const data = await resp.json();
+    // Stream Reader Setup
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let isFirstChunk = true;
 
-    // Show AI response with thinking time
-    addChatBubble("ai", data.reply, thinkingTime);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    // Add AI response to history
-    chatHistory.push({ role: "assistant", content: data.reply });
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
 
-    // Save to localStorage
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataText = line.substring(6);
+          if (dataText === '[DONE]') continue;
+
+          try {
+            const data = JSON.parse(dataText);
+            const contentChunk = data.choices[0]?.delta?.content || "";
+
+            if (contentChunk) {
+              if (isFirstChunk) {
+                textSpan.innerHTML = ""; // Clear "思考中..."
+                isFirstChunk = false;
+              }
+              fullReply += contentChunk;
+
+              // Incrementally render markdown
+              if (window.marked) {
+                const rawHtml = window.marked.parse(fullReply);
+                textSpan.innerHTML = window.DOMPurify ? window.DOMPurify.sanitize(rawHtml) : rawHtml;
+              } else {
+                textSpan.textContent = fullReply;
+              }
+
+              // Keep scrolled to bottom
+              container.scrollTop = container.scrollHeight;
+            }
+          } catch (e) {
+            console.error("Error parsing stream chunk:", e, line);
+          }
+        }
+      }
+    }
+
+    // Highlight code blocks when stream completes
+    if (window.hljs) {
+      textSpan.querySelectorAll('pre code').forEach((block) => {
+        window.hljs.highlightElement(block);
+      });
+    }
+
+    const thinkingTime = (performance.now() - startTime) / 1000;
+
+    // Add thinking time indicator at the end
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "thinking-time";
+    timeSpan.textContent = `生成时间 ${thinkingTime.toFixed(1)}s`;
+    timeSpan.style.fontSize = "0.7em";
+    timeSpan.style.opacity = "0.3";
+    timeSpan.style.marginLeft = "8px";
+    bubble.appendChild(timeSpan);
+
+    // Add copy button
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "chat-copy-btn";
+    copyBtn.title = "复制内容";
+    copyBtn.innerHTML = "📋";
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(fullReply).then(() => {
+        const orig = copyBtn.innerHTML;
+        copyBtn.innerHTML = "✓";
+        setTimeout(() => copyBtn.innerHTML = orig, 2000);
+      });
+    };
+    bubble.appendChild(copyBtn);
+
+    // Save final response to history
+    chatHistory.push({ role: "assistant", content: fullReply });
     saveChatHistory();
 
   } catch (e) {
-    document.getElementById("chat-loading")?.remove();
-    addChatBubble("ai", "抱歉，出现了网络错误，请稍后再试。");
+    if (fullReply === "") {
+      textSpan.innerHTML = "抱歉，出现了网络错误，请稍后再试。";
+    } else {
+      textSpan.innerHTML += "<br><br><em>(连接中断)</em>";
+    }
     console.error("Chat error:", e);
   } finally {
     input.disabled = false;
@@ -585,13 +722,13 @@ function initializeChat() {
       addChatBubble(role, displayText);
     });
   } else {
-    // Show default welcome message
-    addChatBubble('ai', '你好！我是地震知识助手，有什么关于地震的问题都可以问我。');
+    // Show default welcome message (ensure it renders via marked if available)
+    addChatBubble('ai', '系统就绪。\n随时待命分析全球地震数据与地质态势。');
   }
 }
 
 // --- 渲染逻辑 ---
-function renderGeoJSON(geojson, plan) {
+function renderGeoJSON(geojson, plan, preserveView = false) {
   // 1. Clear ALL existing layers
   if (earthquakeLayer) {
     map.removeLayer(earthquakeLayer);
@@ -611,20 +748,29 @@ function renderGeoJSON(geojson, plan) {
   // 2. Render based on current mode
   if (isHeatmapMode) {
     // --- Heatmap Mode ---
+    // console.log("Rendering Heatmap Mode");
     const points = getHeatmapPoints(features);
-    heatLayer = L.heatLayer(points, {
-      radius: 35,
-      blur: 10,
-      maxZoom: 10,
-      max: 1.0,
-      gradient: {
-        0.1: 'blue',
-        0.3: 'cyan',
-        0.5: 'lime',
-        0.7: 'yellow',
-        1.0: 'red'
+    // console.log(`Heatmap Points: ${points.length}`);
+    if (points.length > 0) {
+      try {
+        heatLayer = L.heatLayer(points, {
+          radius: 50, // Significantly increased radius for better visibility
+          blur: 30, // Increased blur for smoother heat spreading
+          maxZoom: 14,
+          max: 1.0,
+          gradient: {
+            0.2: '#0ea5e9', // Light Blue
+            0.4: '#10b981', // Emerald
+            0.6: '#fbbf24', // Amber
+            0.8: '#f97316', // Orange
+            1.0: '#ef4444'  // Red
+          }
+        }).addTo(map);
+        // console.log("HeatLayer added to map", heatLayer);
+      } catch (err) {
+        console.error("Error creating heatLayer:", err);
       }
-    }).addTo(map);
+    }
   } else {
     // --- Normal Marker Mode (Original Logic) ---
     earthquakeLayer = L.geoJSON(geojson, {
@@ -642,11 +788,19 @@ function renderGeoJSON(geojson, plan) {
         const p = feature.properties || {};
         const depth = feature.geometry.coordinates[2];
         layer.bindPopup(
-          `<b>${p.place}</b><br/>
-           震级: <b>${formatMag(p.mag)}</b><br/>
-           深度: <b>${formatDepthValue(depth)}</b> km<br/>
-           时间: ${formatTime(p.time)}<br/>
-           <a href="${p.url}" target="_blank">USGS详情</a>`
+          `<div class="popup-header">
+             <span class="popup-mag-badge" style="background-color:${colorByMag(p.mag)}">${formatMag(p.mag)}</span>
+             ${p.place || 'Unknown Location'}
+           </div>
+           <div class="popup-row">
+             <span class="popup-label">Depth</span>
+             <span class="popup-value">${formatDepthValue(depth)} km</span>
+           </div>
+           <div class="popup-row">
+             <span class="popup-label">Time</span>
+             <span class="popup-value">${formatTime(p.time)}</span>
+           </div>
+           <a href="${p.url}" target="_blank" class="popup-link">View USGS Report →</a>`
         );
       },
     }).addTo(map);
@@ -659,9 +813,18 @@ function renderGeoJSON(geojson, plan) {
     plan.minlongitude != null &&
     plan.maxlongitude != null
   ) {
+    // Determine which params to use: prefer actual USGS applied parameters to sync visuals with the backend action
+    const displayParams = window.lastPayload && window.lastPayload.usgs_params
+      ? window.lastPayload.usgs_params : plan;
+
+    const minlat = displayParams.minlatitude !== undefined ? displayParams.minlatitude : plan.minlatitude;
+    const maxlat = displayParams.maxlatitude !== undefined ? displayParams.maxlatitude : plan.maxlatitude;
+    const minlon = displayParams.minlongitude !== undefined ? displayParams.minlongitude : plan.minlongitude;
+    const maxlon = displayParams.maxlongitude !== undefined ? displayParams.maxlongitude : plan.maxlongitude;
+
     const bounds = [
-      [plan.minlatitude, plan.minlongitude],
-      [plan.maxlatitude, plan.maxlongitude],
+      [minlat, minlon],
+      [maxlat, maxlon],
     ];
     bboxLayer = L.rectangle(bounds, {
       color: "#ff3333",
@@ -669,16 +832,20 @@ function renderGeoJSON(geojson, plan) {
       dashArray: "5, 10",
       fill: false,
     }).addTo(map);
-    map.fitBounds(bounds, { padding: [50, 50] });
+    if (!preserveView) {
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
   } else {
     // Fit bounds to features (works for both layers)
-    try {
-      const layer = isHeatmapMode ? heatLayer : earthquakeLayer;
-      if (layer && features.length > 0) {
-        // HeatLayer doesn't have getBounds, need to calculate manually or skip
-        if (!isHeatmapMode) map.fitBounds(layer.getBounds().pad(0.1));
-      }
-    } catch (e) { }
+    if (!preserveView) {
+      try {
+        const layer = isHeatmapMode ? heatLayer : earthquakeLayer;
+        if (layer && features.length > 0) {
+          // HeatLayer doesn't have getBounds, need to calculate manually or skip
+          if (!isHeatmapMode) map.fitBounds(layer.getBounds().pad(0.1));
+        }
+      } catch (e) { }
+    }
   }
 }
 
@@ -717,9 +884,12 @@ function updateInfoPanel(payload) {
   document.getElementById('stat-max-mag').textContent = formatMag(stats.max_magnitude);
 
   // Render charts
-  renderCharts(features);
+  // Delay slightly to ensure DOM is ready and layout is stable
+  setTimeout(() => {
+    renderCharts(features);
+  }, 100);
 
-  // Update AI details
+  // Update AI Filter Criteria
   let timeStr = "";
   if (plan.starttime) {
     const start = plan.starttime.split("T")[0];
@@ -732,12 +902,28 @@ function updateInfoPanel(payload) {
   }
 
   const aiDetailsList = document.getElementById('ai-details-list');
+  const aiDetailsContent = document.getElementById('ai-details-content');
+
+  // Make sure to remove hidden class if it was hidden
+  if (aiDetailsList) aiDetailsList.classList.remove('hidden');
+  if (aiDetailsContent) aiDetailsContent.classList.remove('hidden');
+
   aiDetailsList.innerHTML = `
-    <li><strong>时间:</strong> ${timeStr}</li>
-    <li><strong>区域:</strong> ${formatLocation(plan)}</li>
-    <li><strong>震级:</strong> ${formatMagRange(plan)}</li>
-    <li><strong>深度:</strong> ${formatDepth(plan)}</li>
+    <li><strong>时间范围:</strong> ${timeStr}</li>
+    <li><strong>地理区域:</strong> ${formatLocation(plan)}</li>
+    <li><strong>震级筛选:</strong> ${formatMagRange(plan)}</li>
+    <li><strong>深度筛选:</strong> ${formatDepth(plan)}</li>
   `;
+
+  // Update header text to "Filter Criteria"
+  const aiHeader = document.getElementById('toggle-ai-details');
+  if (aiHeader) {
+    aiHeader.innerHTML = '筛选条件 (FILTER CRITERIA)';
+    aiHeader.classList.remove('active'); // Reset active state if needed, or keep it depending on desired behavior. Default expanded usually means no special active class unless it denotes "collapsed".
+    // Actually, if we just un-hid the content, we should ensure the header state matches "expanded".
+    // However, the current logic seems to use 'active' for something else or not strictly.
+    // Let's just ensure content is visible.
+  }
 
   // Update timing info
   const timingInfo = document.getElementById('timing-info');
@@ -747,6 +933,10 @@ function updateInfoPanel(payload) {
   `;
 
   // Update earthquake list
+  // ENSURE CONTAINER IS VISIBLE
+  const quakeListContainer = document.getElementById('quake-list-container');
+  if (quakeListContainer) quakeListContainer.classList.remove('hidden');
+
   renderList(features.slice(0, 50));
 
   // Save features for heatmap toggle
@@ -761,36 +951,96 @@ function updateInfoPanel(payload) {
 // Render earthquake list
 function renderList(features) {
   const list = document.getElementById("quake-list");
+  // Remove expanded class initially (reset state)
+  list.classList.remove('quake-list-expanded');
+
   if (!list) return;
 
   list.innerHTML = "";
 
   if (features.length === 0) {
-    list.innerHTML = '<li style="color:#999;padding:10px 0;">暂无数据</li>';
+    list.innerHTML = '<li style="color:#666;padding:20px;text-align:center;">暂无地震数据</li>';
     return;
   }
 
-  features.forEach(f => {
-    const p = f.properties;
-    const coords = f.geometry.coordinates;
-    const depth = coords[2];
-    const time = new Date(p.time).toLocaleDateString('zh-CN');
+  // Logic: Show top 5 by default
+  const MAX_VISIBLE = 5;
+  const showAll = features.length <= MAX_VISIBLE; // Or check a flag passed if needed, but default is folded
 
-    const li = document.createElement("li");
-    li.className = "quake-item";
-    li.innerHTML = `
-      <span class="quake-mag">${formatMag(p.mag)}</span>
-      <span class="quake-place" title="${p.place}">${p.place || 'Unknown'}</span>
-      <span class="quake-time">${time}</span>
-    `;
+  const visibleFeatures = features.slice(0, MAX_VISIBLE);
 
-    li.addEventListener("click", () => {
-      map.flyTo([coords[1], coords[0]], 8);
+  // Render visible items
+  visibleFeatures.forEach(f => {
+    list.appendChild(createQuakeItem(f));
+  });
+
+  // If more items exist, add "Show More" button
+  if (features.length > MAX_VISIBLE) {
+    const remainingCount = features.length - MAX_VISIBLE;
+    const btn = document.createElement('button');
+    btn.id = 'btn-show-more';
+    btn.textContent = `显示更多 (${remainingCount} 条)`;
+
+    btn.addEventListener('click', () => {
+      // Remove button
+      btn.remove();
+      // Render remaining items
+      const remainingFeatures = features.slice(MAX_VISIBLE);
+      remainingFeatures.forEach(f => {
+        list.appendChild(createQuakeItem(f));
+      });
+      // Mark as expanded for Esc key logic
+      list.classList.add('quake-list-expanded');
+
+      // Scroll new items into view smoothly if needed (optional)
     });
 
-    list.appendChild(li);
-  });
+    list.appendChild(btn);
+  }
 }
+
+// Helper: Create single quake item element
+function createQuakeItem(f) {
+  const p = f.properties;
+  const coords = f.geometry.coordinates;
+  const depth = coords[2];
+  const timeObj = new Date(p.time);
+  const dateStr = timeObj.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
+  const timeStr = timeObj.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+  const li = document.createElement("li");
+  li.className = "quake-item";
+
+  const magColor = colorByMag(p.mag);
+
+  li.innerHTML = `
+    <div class="quake-mag-badge" style="background-color:${magColor}">${formatMag(p.mag)}</div>
+    <div class="quake-details">
+      <span class="quake-place" title="${p.place}">${p.place || 'Unknown Location'}</span>
+      <div class="quake-time-depth">
+        <span>${dateStr} ${timeStr}</span>
+        <span>${formatDepthValue(depth)} km</span>
+      </div>
+    </div>
+  `;
+
+  // Click to fly to location
+  li.addEventListener('click', () => {
+    map.flyTo([coords[1], coords[0]], 8, { duration: 1.5 });
+    // Open popup if layer exists
+    if (earthquakeLayer) {
+      earthquakeLayer.eachLayer(layer => {
+        if (layer.feature.id === f.id) {
+          layer.openPopup();
+        }
+      });
+    }
+  });
+
+  return li;
+}
+
+
 
 // --- 事件绑定 ---
 
@@ -798,6 +1048,14 @@ function renderList(features) {
 document.getElementById("close-info").addEventListener("click", () => {
   minimizeInfoPanel();
 });
+
+// Helper to restore info panel
+function restoreInfoPanel() {
+  const panel = document.getElementById('info-panel');
+  const icon = document.getElementById('info-panel-icon');
+  if (panel) panel.classList.remove('hidden');
+  if (icon) icon.classList.add('hidden');
+}
 
 // 2. 点击最小化图标恢复面板
 document.getElementById("info-panel-icon").addEventListener("click", () => {
@@ -943,15 +1201,7 @@ function minimizeInfoPanel() {
   }
 }
 
-function restoreInfoPanel() {
-  const infoPanel = document.getElementById('info-panel');
-  const infoPanelIcon = document.getElementById('info-panel-icon');
 
-  if (infoPanel && infoPanelIcon) {
-    infoPanel.classList.remove('hidden');
-    infoPanelIcon.classList.add('hidden');
-  }
-}
 
 function collapseAllInfoSections() {
   // Collapse AI details section
@@ -1102,59 +1352,109 @@ document.addEventListener("keydown", (e) => {
 
     // Priority 3: Handle info panel
     if (infoPanel && !infoPanel.classList.contains('hidden')) {
-      // Check if any sections are expanded
-      if (hasExpandedInfoSections()) {
-        // First Esc: Collapse all expanded sections
-        collapseAllInfoSections();
-      } else {
-        // Second Esc (or first if no expanded): Minimize to icon
-        minimizeInfoPanel();
+      // 1. If list is fully expanded (via "Show More"), collapse it back to 5 items.
+      if (document.querySelector('.quake-list-expanded')) {
+        // Collapse the list back to 5 items
+        const features = currentFeatures || [];
+        renderList(features); // This resets to default 5 items
+        return;
       }
+
+      // 2. Otherwise, minimize the entire panel directly.
+      // We no longer hide individual sections (like AI details or list container) 
+      // because user wants them to stay visible until the whole thing minimizes.
+      minimizeInfoPanel();
       return;
     }
   }
 });
 
+
+
 // Legend removed per user request
 
 // --- Custom Heatmap Control ---
-const heatControl = L.control({ position: 'topright' });
+// --- Mission Control Logic ---
 
-heatControl.onAdd = function (map) {
-  const div = L.DomUtil.create('div', 'leaflet-bar');
-  const btn = L.DomUtil.create('button', 'custom-map-control', div);
-  btn.innerHTML = '🔥'; // Fire emoji for Heatmap
-  btn.title = '切换热力图模式';
-  btn.id = 'btn-toggle-heat';
+// 1. Layer Toggle (Gaode/Satellite/Dark)
+const btnLayerToggle = document.getElementById('btn-layer-toggle');
+// Map order: 0 = Light (Gaode), 1 = Satellite, 2 = Dark
+const mapModes = [gaode, satellite, darkMatter];
+let currentMapModeIndex = 0; // Starts at 0 because map is initialized with gaode
 
-  btn.onclick = function (e) {
-    L.DomEvent.stopPropagation(e); // Prevent map click
-    toggleHeatmapMode();
-  };
+if (btnLayerToggle) {
+  btnLayerToggle.addEventListener('click', () => {
+    // 1. Remove current layer
+    map.removeLayer(mapModes[currentMapModeIndex]);
 
-  return div;
-};
+    // 2. Increment cycle
+    currentMapModeIndex = (currentMapModeIndex + 1) % mapModes.length;
 
-heatControl.addTo(map);
+    // 3. Add new layer
+    map.addLayer(mapModes[currentMapModeIndex]);
 
-// --- Toggle Logic ---
+    // 4. Update Button UI state
+    if (currentMapModeIndex === 0) {
+      btnLayerToggle.classList.remove('active');
+    } else {
+      btnLayerToggle.classList.add('active'); // active for non-default modes
+    }
+  });
+}
+
+// 2. Heatmap Toggle
+const btnHeatToggle = document.getElementById('btn-toggle-heat');
+if (btnHeatToggle) {
+  btnHeatToggle.addEventListener('click', toggleHeatmapMode);
+}
+
+// 3. Zoom Controls
+const btnZoomIn = document.getElementById('btn-zoom-in');
+const btnZoomOut = document.getElementById('btn-zoom-out');
+if (btnZoomIn) btnZoomIn.addEventListener('click', () => map.zoomIn());
+if (btnZoomOut) btnZoomOut.addEventListener('click', () => map.zoomOut());
+
+// --- Toggle Logic for Heatmap ---
 function toggleHeatmapMode() {
   isHeatmapMode = !isHeatmapMode;
 
   // Update Button UI
   const btn = document.getElementById('btn-toggle-heat');
-  if (isHeatmapMode) {
-    btn.classList.add('active');
-  } else {
-    btn.classList.remove('active');
+  if (btn) {
+    if (isHeatmapMode) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
   }
 
   // Re-render map using stored data if available
   if (currentFeatures.length > 0) {
     if (window.lastPlan) {
-      renderGeoJSON({ type: "FeatureCollection", features: currentFeatures }, window.lastPlan);
+      renderGeoJSON({ type: "FeatureCollection", features: currentFeatures }, window.lastPlan, true);
     }
   }
+}
+
+// Chat Toggle Logic
+const chatToggleBtn = document.getElementById("chat-toggle-btn");
+const chatSidebar = document.getElementById("chat-sidebar");
+
+if (chatToggleBtn && chatSidebar) {
+  chatToggleBtn.addEventListener("click", () => {
+    chatSidebar.classList.toggle("hidden");
+    // Focus input if opening
+    if (!chatSidebar.classList.contains("hidden")) {
+      setTimeout(() => document.getElementById("chat-input").focus(), 100);
+    }
+  });
+
+  // Handle ESC key to close sidebar
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !chatSidebar.classList.contains("hidden")) {
+      chatSidebar.classList.add("hidden");
+    }
+  });
 }
 
 // Chat event listeners
@@ -1166,11 +1466,34 @@ if (chatSendBtn) {
 }
 
 if (chatInput) {
+  // Handle auto-resizing
+  chatInput.addEventListener('input', function () {
+    this.style.height = 'auto';
+    this.style.height = (this.scrollHeight) + 'px';
+  });
+
+  // Handle enter key (shift+enter for newline)
   chatInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendChatMessage();
     }
+  });
+}
+
+// Quick Prompts Setup
+const promptChips = document.querySelectorAll('.prompt-chip');
+if (promptChips.length > 0) {
+  promptChips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      const queryText = chip.getAttribute('data-query');
+      if (chatInput && queryText) {
+        chatInput.value = queryText;
+        chatInput.style.height = 'auto';
+        chatInput.style.height = (chatInput.scrollHeight) + 'px';
+        sendChatMessage();
+      }
+    });
   });
 }
 
@@ -1187,44 +1510,55 @@ if (chatClearBtn) {
 }
 
 // --- Export Logic ---
+// --- Export Logic ---
 const exportBtn = document.getElementById('btn-export-trigger');
 const exportMenu = document.getElementById('export-menu');
 const exportOptions = document.querySelectorAll('.export-option');
 
 // Toggle menu
-if (exportBtn) {
+if (exportBtn && exportMenu) {
   exportBtn.addEventListener('click', (e) => {
     e.stopPropagation(); // Prevent document click from closing it immediately
 
-    // Check if we have data to export
-    if (!currentFeatures || currentFeatures.length === 0) {
-      alert('暂无数据可导出，请先查询地震数据。');
-      return;
-    }
+    // Check if we have data to export (optional, maybe user wants to see options first)
+    // if (!currentFeatures || currentFeatures.length === 0) { ... }
 
-    exportMenu.classList.toggle('hidden');
+    // Toggle the class
+    if (exportMenu.classList.contains('hidden')) {
+      exportMenu.classList.remove('hidden');
+    } else {
+      exportMenu.classList.add('hidden');
+    }
   });
 }
 
 // Close menu when clicking outside
-document.addEventListener('click', () => {
+document.addEventListener('click', (e) => {
   if (exportMenu && !exportMenu.classList.contains('hidden')) {
-    exportMenu.classList.add('hidden');
+    // Only close if click is NOT inside the menu
+    if (!exportMenu.contains(e.target) && e.target !== exportBtn && !exportBtn.contains(e.target)) {
+      exportMenu.classList.add('hidden');
+    }
   }
 });
 
 // Handle export options
 exportOptions.forEach(opt => {
-  opt.addEventListener('click', () => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation(); // Prevent closing menu immediately (though we close it manually below)
     const type = opt.dataset.type;
     const timestamp = new Date().toISOString().slice(0, 10);
-    const fileName = `earthquakes_${timestamp}.${type}`; // e.g., earthquakes_2024-01-15.csv
+    const fileName = `earthquakes_${timestamp}.${type}`;
+
+    if (!currentFeatures || currentFeatures.length === 0) {
+      alert('暂无数据可导出');
+      return;
+    }
 
     if (type === 'csv') {
       const csvContent = convertToCSV(currentFeatures);
       downloadFile(csvContent, fileName, 'text/csv;charset=utf-8;');
     } else if (type === 'geojson') {
-      // Reconstruct full GeoJSON object
       const geojsonObj = {
         type: "FeatureCollection",
         metadata: { generated: new Date().getTime(), title: "Exported from Earthquake Agent" },
@@ -1238,3 +1572,134 @@ exportOptions.forEach(opt => {
     exportMenu.classList.add('hidden');
   });
 });
+
+// --- Secondary Filter Logic ---
+const filterToggleBtn = document.getElementById('btn-filter-toggle');
+const filterPanel = document.getElementById('filter-panel');
+const filterCloseBtn = document.getElementById('filter-close');
+const filterResetBtn = document.getElementById('filter-reset');
+
+const filterMagSlider = document.getElementById('filter-mag-slider');
+const filterDepthSlider = document.getElementById('filter-depth-slider');
+
+const magMinVal = document.getElementById('mag-min-val');
+const magMaxVal = document.getElementById('mag-max-val');
+const depthMinVal = document.getElementById('depth-min-val');
+const depthMaxVal = document.getElementById('depth-max-val');
+const filterStats = document.getElementById('filter-stats');
+
+// Initialize noUiSliders
+if (filterMagSlider && window.noUiSlider) {
+  window.noUiSlider.create(filterMagSlider, {
+    start: [0, 10],
+    connect: true,
+    step: 0.1,
+    range: {
+      'min': 0,
+      'max': 10
+    }
+  });
+}
+
+if (filterDepthSlider && window.noUiSlider) {
+  window.noUiSlider.create(filterDepthSlider, {
+    start: [0, 700],
+    connect: true,
+    step: 1,
+    range: {
+      'min': 0,
+      'max': 700
+    }
+  });
+}
+
+// Toggle filter panel
+if (filterToggleBtn && filterPanel) {
+  filterToggleBtn.addEventListener('click', () => {
+    filterPanel.classList.toggle('hidden');
+    if (!filterPanel.classList.contains('hidden')) {
+      filterToggleBtn.classList.add('active');
+    } else {
+      filterToggleBtn.classList.remove('active');
+    }
+  });
+}
+
+// Close filter panel
+if (filterCloseBtn) {
+  filterCloseBtn.addEventListener('click', () => {
+    filterPanel.classList.add('hidden');
+    filterToggleBtn.classList.remove('active');
+  });
+}
+
+// Apply filter function
+function applyFilter() {
+  if (!currentFeatures || currentFeatures.length === 0) {
+    if (filterStats) filterStats.textContent = '暂无查询数据';
+    return;
+  }
+
+  // Get values from noUiSliders
+  let magLow = 0, magHigh = 10;
+  let depthLow = 0, depthHigh = 700;
+
+  if (filterMagSlider && filterMagSlider.noUiSlider) {
+    const magValues = filterMagSlider.noUiSlider.get();
+    magLow = parseFloat(magValues[0]);
+    magHigh = parseFloat(magValues[1]);
+  }
+
+  if (filterDepthSlider && filterDepthSlider.noUiSlider) {
+    const depthValues = filterDepthSlider.noUiSlider.get();
+    depthLow = parseFloat(depthValues[0]);
+    depthHigh = parseFloat(depthValues[1]);
+  }
+
+  // Update display labels
+  if (magMinVal) magMinVal.textContent = magLow.toFixed(1);
+  if (magMaxVal) magMaxVal.textContent = magHigh.toFixed(1);
+  if (depthMinVal) depthMinVal.textContent = Math.round(depthLow);
+  if (depthMaxVal) depthMaxVal.textContent = Math.round(depthHigh);
+
+  // Filter features
+  const filtered = currentFeatures.filter(f => {
+    const mag = f.properties?.mag ?? 0;
+    const depth = f.geometry?.coordinates?.[2] ?? 0;
+    return mag >= magLow && mag <= magHigh && depth >= depthLow && depth <= depthHigh;
+  });
+
+  // Update stats display
+  if (filterStats) {
+    filterStats.textContent = `当前显示：${filtered.length} / ${currentFeatures.length} 条`;
+  }
+
+  // Re-render map & list with filtered data
+  const filteredGeoJSON = { type: "FeatureCollection", features: filtered };
+  if (window.lastPlan) {
+    renderGeoJSON(filteredGeoJSON, window.lastPlan, true);
+  }
+  renderList(filtered);
+  renderCharts(filtered);
+}
+
+// Attach event listeners to noUiSliders
+if (filterMagSlider && filterMagSlider.noUiSlider) {
+  filterMagSlider.noUiSlider.on('update', applyFilter);
+}
+if (filterDepthSlider && filterDepthSlider.noUiSlider) {
+  filterDepthSlider.noUiSlider.on('update', applyFilter);
+}
+
+// Reset filter
+if (filterResetBtn) {
+  filterResetBtn.addEventListener('click', () => {
+    if (filterMagSlider && filterMagSlider.noUiSlider) {
+      filterMagSlider.noUiSlider.set([0, 10]);
+    }
+    if (filterDepthSlider && filterDepthSlider.noUiSlider) {
+      filterDepthSlider.noUiSlider.set([0, 700]);
+    }
+    // Set implicitly calls update event, which calls applyFilter
+  });
+}

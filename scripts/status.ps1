@@ -11,33 +11,53 @@ function Show-Status {
   param(
     [string]$pidFile,
     [string]$name,
+    [int]$port,
     [string]$url
   )
     
-  if (-not (Test-Path $pidFile)) {
-    Write-Host "$name : Not running"
-    return
+  $isRunning = $false
+  $statusMsg = "Not running"
+  $procId = $null
+
+  if (Test-Path $pidFile) {
+    $procId = (Get-Content $pidFile | Select-Object -First 1).Trim()
+    if ($procId) {
+      $p = Get-Process -Id ([int]$procId) -ErrorAction SilentlyContinue
+      if ($null -ne $p) {
+        $isRunning = $true
+        $statusMsg = "Running (PID=$procId)"
+      } else {
+         $statusMsg = "Not running (Stale PID file)"
+      }
+    }
   }
 
-  $procId = (Get-Content $pidFile | Select-Object -First 1).Trim()
-  if (-not $procId) {
-    Write-Host "$name : Not running (empty pid file)"
-    return
+  # Also check if port is actually listening
+  $portConnections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  if ($null -ne $portConnections) {
+    # Port is in use
+    $owningPid = $portConnections[0].OwningProcess
+    if (-not $isRunning) {
+       $isRunning = $true
+       $statusMsg = "Running (Port $port is in use by PID $owningPid, missing/stale PID file)"
+    } else {
+       if ($owningPid -ne $procId) {
+           $statusMsg += " [Warning: Port $port actually used by PID $owningPid]"
+       }
+    }
   }
 
-  $p = Get-Process -Id ([int]$procId) -ErrorAction SilentlyContinue
-  if ($null -eq $p) {
-    Write-Host "$name : Not running (process exited, PID=$procId)"
-  }
-  else {
-    Write-Host "$name : Running (PID=$procId) -> $url"
+  if ($isRunning) {
+    Write-Host "$name : $statusMsg -> $url"
+  } else {
+    Write-Host "$name : $statusMsg"
   }
 }
 
 Write-Host ""
 Write-Host "========== Service Status =========="
-Show-Status -pidFile $apiPidFile -name "API (Backend)" -url "http://127.0.0.1:8000"
-Show-Status -pidFile $webPidFile -name "Web (Frontend)" -url "http://localhost:5173"
+Show-Status -pidFile $apiPidFile -name "API (Backend)" -port 8000 -url "http://127.0.0.1:8000"
+Show-Status -pidFile $webPidFile -name "Web (Frontend)" -port 5173 -url "http://localhost:5173"
 
 Write-Host ""
 Write-Host "Commands:"

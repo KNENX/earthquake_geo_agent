@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -770,7 +773,8 @@ Schema:
    - 若无地名则全为 null。
 
 3. **震级与深度**:
-   - 震级: "大地震" -> mag_phrase="大"; "5级以上" -> minmagnitude=5.0
+   - 如果用户明确指定了震级（如"大地震" -> mag_phrase="大"; "5级以上" -> minmagnitude=5.0），则严格提取。
+   - **⚠️ 警告: 如果用户没有明确指定震级要求（如只说"发生过的地震"），无论是城市、国家还是全球，`minmagnitude` 必须为 `null`，严禁擅自添加如 4.0 这样的默认限制！**
    - 深度: "浅源" -> maxdepth=70; "深源" -> mindepth=300
 
 【完整示例】
@@ -1037,11 +1041,20 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
         # If we found a preset region bbox, use it instead of LLM bbox
         if region_match:
             preset_bbox = region_match[1]
-            usgs_params["minlongitude"] = preset_bbox[0]
-            usgs_params["minlatitude"] = preset_bbox[1]
-            usgs_params["maxlongitude"] = preset_bbox[2]
-            usgs_params["maxlatitude"] = preset_bbox[3]
-            print(f"[GEO] Using preset bbox for '{target_region}': {preset_bbox}")
+            # 计算经度跨距 (maxlon - minlon, 如果跨日期线可能会变成负数，但这里 preset_bbox 是 GADM 生成的严格界限)
+            lon_span = preset_bbox[2] - preset_bbox[0]
+            
+            # 如果是拥有远洋属地的国家，GADM 矩形会极大膨胀（例如超过 90 度）。
+            # 为了防止这种覆盖全球的盲目查询把真数据挤掉（USGS 截断效应），
+            # 只有在跨界合理（< 90度）或属于 "大洲/全球" 这种本身就巨大的范围时，才覆盖 bbox。
+            if lon_span > 90 and target_region not in _SPECIAL_REGIONS:
+                print(f"[GEO] Preset bbox for '{target_region}' spans {lon_span:.1f}° lon. Skipping override and trusting LLM bbox.")
+            else:
+                usgs_params["minlongitude"] = preset_bbox[0]
+                usgs_params["minlatitude"] = preset_bbox[1]
+                usgs_params["maxlongitude"] = preset_bbox[2]
+                usgs_params["maxlatitude"] = preset_bbox[3]
+                print(f"[GEO] Using preset bbox for '{target_region}': {preset_bbox}")
             
             # 自动调整震级：如果是大区域（洲/洋），且用户未指定震级，则默认过滤掉小地震
             # 避免 USGS 在美国本土的海量小地震淹没全球数据
@@ -1138,11 +1151,13 @@ async def nl_query(payload: NLQueryIn) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
 
 @app.post("/api/chat")
-async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
-    """Handle multi-turn chat conversations about earthquakes (uses large model)."""
+async def chat_endpoint(payload: ChatRequest):
+    """Handle multi-turn chat conversations about earthquakes (uses large model) with streaming."""
     api_key = os.getenv("CHAT_API_KEY", "").strip()
-    base_url = os.getenv("CHAT_BASE_URL", "https://integrate.api.nvidia.com/v1").strip()
-    model = os.getenv("CHAT_MODEL", "z-ai/glm4.7").strip()
+    base_url = os.getenv("CHAT_BASE_URL", "https://api.siliconflow.cn/v1").strip()
+    # DeepSeek v3.2 model configuration; using SiliconFlow's typical DeepSeek V3 naming pattern as requested 
+    # (assuming model name like "deepseek-ai/DeepSeek-V3" or whatever user set in .env)
+    model = os.getenv("CHAT_MODEL", "deepseek-ai/DeepSeek-V3").strip()
 
     if not api_key:
         raise HTTPException(status_code=500, detail="Missing CHAT_API_KEY")
@@ -1162,6 +1177,7 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
 2. **禁止编造数据**：对于 Top 20 以外的地震细节，必须明确说明"数据未提供"。
 3. **宏观分析优先**：利用统计数据分析地震活动的整体趋势（如震级分布、频次）。
 4. **区分数据与知识**：地震科普问题可以用专业知识回答，但数据分析必须基于实际数据。
+5. **排版要求**：请使用 Markdown 格式（如加粗、列表）让回答结构更清晰，但避免过于复杂的表格。
 
 【数据分析能力】
 - 总结地震分布特征（时间、空间、震级分布）
@@ -1185,24 +1201,26 @@ async def chat_endpoint(payload: ChatRequest) -> ChatResponse:
         "model": model,
         "temperature": 0.7,
         "messages": messages,
+        "stream": True # Enable streaming
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
-            print(f"[CHAT DEBUG] LLM response status: {resp.status_code}")
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                print(f"[CHAT DEBUG] LLM error response: {error_text}")
-                raise HTTPException(status_code=502, detail=f"LLM error: {resp.status_code} - {error_text}")
-            result = resp.json()
-    except httpx.TimeoutException as e:
-        print(f"[CHAT DEBUG] Timeout error: {e}")
-        raise HTTPException(status_code=504, detail=f"LLM request timeout: {e}")
-    except httpx.RequestError as e:
-        print(f"[CHAT DEBUG] Request error: {e}")
-        raise HTTPException(status_code=502, detail=f"LLM request failed: {e}")
+    async def stream_generator():
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=body) as response:
+                    print(f"[CHAT DEBUG] LLM response status: {response.status_code}")
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        print(f"[CHAT DEBUG] LLM error response: {error_text.decode('utf-8')[:500]}")
+                        yield f"data: {{\"error\": \"HTTP {response.status_code}\"}}\n\n"
+                        return
+                    
+                    async for line in response.aiter_lines():
+                        if line:
+                            yield f"{line}\n"
+                            
+        except Exception as e:
+            print(f"[CHAT DEBUG] Exception during stream: {e}")
+            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
 
-    reply = result["choices"][0]["message"]["content"]
-    print(f"[CHAT DEBUG] Success, reply length: {len(reply)}")
-    return ChatResponse(reply=reply)
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")

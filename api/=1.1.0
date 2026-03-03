@@ -1,0 +1,30 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting geopandas
+  Using cached geopandas-1.1.2-py3-none-any.whl.metadata (2.3 kB)
+Requirement already satisfied: numpy>=1.24 in c:\users\admin\appdata\roaming\python\python314\site-packages (from geopandas) (2.4.2)
+Collecting pyogrio>=0.7.2 (from geopandas)
+  Using cached pyogrio-0.12.1-cp314-cp314-win_amd64.whl.metadata (6.0 kB)
+Collecting packaging (from geopandas)
+  Using cached packaging-26.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting pandas>=2.0.0 (from geopandas)
+  Downloading pandas-3.0.1-cp314-cp314-win_amd64.whl.metadata (19 kB)
+Collecting pyproj>=3.5.0 (from geopandas)
+  Using cached pyproj-3.7.2-cp314-cp314-win_amd64.whl.metadata (31 kB)
+Requirement already satisfied: shapely>=2.0.0 in c:\users\admin\appdata\roaming\python\python314\site-packages (from geopandas) (2.1.2)
+Collecting python-dateutil>=2.8.2 (from pandas>=2.0.0->geopandas)
+  Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Requirement already satisfied: tzdata in c:\users\admin\appdata\roaming\python\python314\site-packages (from pandas>=2.0.0->geopandas) (2025.2)
+Requirement already satisfied: certifi in c:\users\admin\appdata\roaming\python\python314\site-packages (from pyogrio>=0.7.2->geopandas) (2026.1.4)
+Collecting six>=1.5 (from python-dateutil>=2.8.2->pandas>=2.0.0->geopandas)
+  Using cached six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Using cached geopandas-1.1.2-py3-none-any.whl (341 kB)
+Downloading pandas-3.0.1-cp314-cp314-win_amd64.whl (9.9 MB)
+   ---------------------------------------- 9.9/9.9 MB 4.1 MB/s  0:00:03
+Using cached pyogrio-0.12.1-cp314-cp314-win_amd64.whl (23.6 MB)
+Using cached pyproj-3.7.2-cp314-cp314-win_amd64.whl (6.4 MB)
+Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Using cached six-1.17.0-py2.py3-none-any.whl (11 kB)
+Using cached packaging-26.0-py3-none-any.whl (74 kB)
+Installing collected packages: six, pyproj, packaging, python-dateutil, pyogrio, pandas, geopandas
+
+Successfully installed geopandas-1.1.2 packaging-26.0 pandas-3.0.1 pyogrio-0.12.1 pyproj-3.7.2 python-dateutil-2.9.0.post0 six-1.17.0
