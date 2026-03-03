@@ -16,3 +16,12 @@ web/.vite/
 
 .env
 api/.env
+
+# Large Geo Data
+api/boundaries/gadm41_CHN.gpkg
+api/boundaries/natural_earth/
+api/boundaries/*.zip
+
+# Runtime Logs & PIDs
+api/logs/
+scripts/pids/
