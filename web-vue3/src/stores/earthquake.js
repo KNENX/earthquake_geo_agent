@@ -36,10 +36,22 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
       features.value = data.geojson?.features || []
       stats.value = data.stats || null
       currentPlan.value = data.plan || null
+      
+      // 显示成功提示（如果数据不为空）
+      if (features.value.length > 0) {
+        ElMessage.success(`查询成功，共找到 ${features.value.length} 条地震数据`)
+      } else {
+        ElMessage.warning('未找到符合条件的地震数据')
+      }
+      
+      return data
     } catch (err) {
       error.value = err.message || '查询失败'
       features.value = []
       stats.value = null
+      currentPlan.value = null
+      ElMessage.error('查询失败：' + err.message)
+      throw err
     } finally {
       loading.value = false
     }

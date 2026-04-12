@@ -2,9 +2,10 @@
 import { ref } from 'vue'
 import { Search, Location, Filter } from '@element-plus/icons-vue'
 import { useEarthquakeStore } from '@/stores/earthquake'
+import { debounce } from '@/utils/throttle'
 
 const store = useEarthquakeStore()
-const query = ref('')  // 搜索内容
+const query = ref('') // 搜索内容
 
 /**
  * 执行搜索
@@ -14,6 +15,40 @@ async function handleSearch() {
     ElMessage.warning('请输入查询内容')
     return
   }
+  
+  try {
+    await store.search(query.value)
+    query.value = ''
+    ElMessage.success('查询成功')
+  } catch (err) {
+    // 错误已在 store 中处理
+  }
+}
+
+/**
+ * 使用防抖的搜索（用于输入框实时提示，可选）
+ */
+const debouncedSearch = debounce(handleSearch, 500)
+
+/**
+ * 使用当前位置
+ */
+function useCurrentLocation() {
+  if (!navigator.geolocation) {
+    ElMessage.error('浏览器不支持定位')
+    return
+  }
+  
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = pos.coords.latitude.toFixed(2)
+      const lon = pos.coords.longitude.toFixed(2)
+      query.value = `坐标 ${lat}, ${lon} 附近 500km 内的地震`
+      ElMessage.success('定位成功')
+    },
+    () => ElMessage.error('定位失败，请检查权限设置')
+  )
+}
   await store.search(query.value)
   query.value = ''
 }

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, watch, computed, onUnmounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet-heat'
@@ -212,6 +212,39 @@ onMounted(() => {
  * 监听数据变化
  */
 watch(() => store.features, renderLayers, { deep: true })
+
+/**
+ * 组件卸载时清理
+ */
+onUnmounted(() => {
+  // 清理热力图层
+  if (heatLayer) {
+    map?.removeLayer(heatLayer)
+    heatLayer = null
+  }
+  
+  // 清理图层组
+  if (layerGroup) {
+    layerGroup.clearLayers()
+    map?.removeLayer(layerGroup)
+    layerGroup = null
+  }
+  
+  // 清理底图
+  if (currentTileLayer) {
+    map?.removeLayer(currentTileLayer)
+    currentTileLayer = null
+  }
+  
+  // 销毁地图实例
+  if (map) {
+    map.remove()
+    map = null
+  }
+  
+  // 清理全局引用
+  delete window.mapInstance
+})
 
 /**
  * 暴露方法
