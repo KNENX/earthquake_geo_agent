@@ -2,38 +2,84 @@
 import { ref } from 'vue'
 import { Plus, Minus, MapLocation, DataLine, Download } from '@element-plus/icons-vue'
 
-const emit = defineEmits(['zoom-in', 'zoom-out', 'toggle-heat', 'export'])
+const currentLayer = ref('gaode')
+const isHeatmap = ref(false)
 
-const showExportMenu = ref(false)
+/**
+ * 放大
+ */
+function zoomIn() {
+  window.mapInstance?.zoomIn?.()
+}
+
+/**
+ * 缩小
+ */
+function zoomOut() {
+  window.mapInstance?.zoomOut?.()
+}
+
+/**
+ * 切换底图
+ */
+function switchLayer() {
+  const layers = ['gaode', 'satellite', 'dark']
+  const currentIndex = layers.indexOf(currentLayer.value)
+  const nextIndex = (currentIndex + 1) % layers.length
+  currentLayer.value = layers[nextIndex]
+  window.mapInstance?.switchLayer?.(currentLayer.value)
+}
+
+/**
+ * 切换热力图
+ */
+function toggleHeatmap() {
+  isHeatmap.value = !isHeatmap.value
+  window.mapInstance?.toggleHeatmap?.()
+}
 
 /**
  * 导出数据
  */
 function exportData(type) {
-  emit('export', type)
-  showExportMenu.value = false
+  // TODO: 实现导出功能
+  ElMessage.info(`导出${type}功能开发中`)
 }
 </script>
 
 <template>
   <div class="flex flex-col gap-2">
-    <!-- 图层切换 -->
-    <el-button circle size="large" class="shadow-lg" title="切换底图">
+    <!-- 底图切换 -->
+    <el-button
+      circle
+      size="large"
+      class="shadow-lg"
+      :class="{ 'bg-blue-100': currentLayer !== 'gaode' }"
+      title="切换底图"
+      @click="switchLayer"
+    >
       <el-icon><MapLocation /></el-icon>
     </el-button>
 
     <!-- 热力图开关 -->
-    <el-button circle size="large" class="shadow-lg" title="热力图">
+    <el-button
+      circle
+      size="large"
+      class="shadow-lg"
+      :class="{ 'bg-orange-100': isHeatmap }"
+      title="热力图"
+      @click="toggleHeatmap"
+    >
       <el-icon><DataLine /></el-icon>
     </el-button>
 
     <!-- 放大 -->
-    <el-button circle size="large" class="shadow-lg" title="放大" @click="$emit('zoom-in')">
+    <el-button circle size="large" class="shadow-lg" title="放大" @click="zoomIn">
       <el-icon><Plus /></el-icon>
     </el-button>
 
     <!-- 缩小 -->
-    <el-button circle size="large" class="shadow-lg" title="缩小" @click="$emit('zoom-out')">
+    <el-button circle size="large" class="shadow-lg" title="缩小" @click="zoomOut">
       <el-icon><Minus /></el-icon>
     </el-button>
 
@@ -44,8 +90,8 @@ function exportData(type) {
       </el-button>
       <template #dropdown>
         <el-dropdown-menu>
-          <el-dropdown-item @click="exportData('csv')">导出 CSV</el-dropdown-item>
-          <el-dropdown-item @click="exportData('geojson')">导出 GeoJSON</el-dropdown-item>
+          <el-dropdown-item @click="exportData('CSV')">导出 CSV</el-dropdown-item>
+          <el-dropdown-item @click="exportData('GeoJSON')">导出 GeoJSON</el-dropdown-item>
         </el-dropdown-menu>
       </template>
     </el-dropdown>
