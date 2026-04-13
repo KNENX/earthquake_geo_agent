@@ -1,8 +1,9 @@
 <script setup>
-import { ref, onMounted, watch, computed, onUnmounted } from 'vue'
+import { ref, onMounted, watch, onUnmounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import 'leaflet-heat'
+// leaflet-heat 是全局插件，直接导入即可
+import 'leaflet.heat'
 import { useEarthquakeStore } from '@/stores/earthquake'
 
 const store = useEarthquakeStore()

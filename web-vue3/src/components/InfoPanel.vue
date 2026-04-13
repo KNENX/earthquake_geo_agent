@@ -114,10 +114,10 @@ const timeRange = computed(() => {
     </el-card>
 
     <!-- 地震列表 -->
-    <QuakeList />
+    <QuakeList v-if="store.hasData" />
 
     <!-- 空状态 -->
-    <el-card v-else class="shadow-lg">
+    <el-card v-if="!store.hasData && !store.loading" class="shadow-lg">
       <div class="text-center text-gray-400 py-8">
         <el-icon :size="48" class="mb-2"><DataLine /></el-icon>
         <div>请输入查询条件开始搜索</div>
