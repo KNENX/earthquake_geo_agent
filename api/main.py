@@ -395,16 +395,29 @@ def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
 
     # Sort by magnitude descending
     valid_features.sort(key=lambda x: x["mag"], reverse=True)
-    top_20 = valid_features[:20]
+    top_50 = valid_features[:50]
 
-    # Convert timestamps to readable string for Top 20
-    for item in top_20:
+    # Convert timestamps to readable string for Top 50
+    for item in top_50:
         if item["time"]:
             try:
                 dt = datetime.fromtimestamp(item["time"] / 1000, tz=timezone.utc)
                 item["time_str"] = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
             except:
                 item["time_str"] = str(item["time"])
+
+    # Region distribution (Frequency clustering)
+    from collections import Counter
+    region_counts = Counter()
+    for f in valid_features:
+        place = f["place"]
+        if " of " in place:
+            region = place.split(" of ")[-1].strip()
+        else:
+            region = place.strip()
+        region_counts[region] += 1
+    # 取发生频率最高的10个核心地带
+    dist_region = dict(region_counts.most_common(10))
 
     # Magnitude distribution
     dist_mag = {
@@ -421,10 +434,11 @@ def compute_stats(geojson: Dict[str, Any]) -> Dict[str, Any]:
         "min_magnitude": min(mags),
         "avg_magnitude": sum(mags) / len(mags),
         "dist_mag": dist_mag,
+        "dist_region": dist_region,
         "max_depth": max(depths) if depths else 0,
         "min_depth": min(depths) if depths else 0,
         "avg_depth": sum(depths) / len(depths) if depths else 0,
-        "top_20": top_20
+        "top_50": top_50
     }
 
 # -----------------------------
@@ -1173,20 +1187,20 @@ async def chat_endpoint(payload: ChatRequest):
         "content": """你是一位严谨的地震学专家助手。
 
 【核心规则 - 必须严格遵守】
-1. **基于统计与Top20分析**：你接收到的数据是**统计摘要**（总数、分布、最值）和**Top 20 最强地震列表**。
-2. **禁止编造数据**：对于 Top 20 以外的地震细节，必须明确说明"数据未提供"。
-3. **宏观分析优先**：利用统计数据分析地震活动的整体趋势（如震级分布、频次）。
+1. **基于统计与Top50分析**：你接收到的数据是**统计摘要**（总数、分布、最值）和**Top 50 最强地震列表**。
+2. **禁止编造数据**：对于 Top 50 以外的地震细节，必须明确说明"数据未提供"。
+3. **宏观分析优先**：利用统计数据分析地震活动的整体趋势（如震级频率、地域高发统计等）。
 4. **区分数据与知识**：地震科普问题可以用专业知识回答，但数据分析必须基于实际数据。
 5. **排版要求**：请使用 Markdown 格式（如加粗、列表）让回答结构更清晰，但避免过于复杂的表格。
 
 【数据分析能力】
-- 总结地震分布特征（时间、空间、震级分布）
-- 详细分析 Top 20 强震的特征
-- 统计不同震级区间的数量（基于提供的分布数据）
-- 分析地震活动的规律和趋势
+- 总结地震分布特征（时间、空间高发地带、震级分布）
+- 详细分析 Top 50 强震的特征
+- 统计不同区间的数量与极值
+- 分析地震活动的规律和地质趋势
 
 【回答格式】
-- 回答数据问题时，引用格式：如"第X条（Top 20）：地点XX，震级X.X级"
+- 回答数据问题时，引用格式：如"第X条（Top 50）：地点XX，震级X.X级"
 - 使用简洁、专业但易懂的中文
 - 如果没有数据背景但用户询问数据，请回复："请先在顶部搜索框查询地震数据，然后我可以帮您分析。\""""
     }

@@ -5,8 +5,11 @@ import 'leaflet/dist/leaflet.css'
 // leaflet-heat 是全局插件，直接导入即可
 import 'leaflet.heat'
 import { useEarthquakeStore } from '@/stores/earthquake'
+import { useFilterStore } from '@/stores/filter'
+import { mapEventBus } from '@/composables/useMapControl'
 
 const store = useEarthquakeStore()
+const filterStore = useFilterStore()
 const mapEl = ref(null)
 let map = null
 let layerGroup = null
@@ -52,7 +55,8 @@ function getColorByMag(mag) {
  * 切换底图
  */
 function switchBaseLayer(type) {
-  if (!map || currentBaseLayer.value === type) return
+  if (!map) return
+  if (currentTileLayer && currentBaseLayer.value === type) return
   
   if (currentTileLayer) {
     map.removeLayer(currentTileLayer)
@@ -154,7 +158,7 @@ function renderMarkers(features) {
  * 渲染图层
  */
 function renderLayers() {
-  const features = store.features
+  const features = filterStore.filteredFeatures
   
   if (isHeatmapMode.value) {
     // 热力图模式
@@ -200,19 +204,20 @@ onMounted(() => {
   // 创建图层组
   layerGroup = L.layerGroup().addTo(map)
   
-  // 暴露方法给父组件
-  window.mapInstance = {
-    zoomIn: () => map?.zoomIn(),
-    zoomOut: () => map?.zoomOut(),
-    switchLayer: switchBaseLayer,
-    toggleHeatmap
-  }
+  // 监听地图控制总线
+  mapEventBus.on(({ type, payload }) => {
+    if (type === 'zoomIn') map?.zoomIn()
+    if (type === 'zoomOut') map?.zoomOut()
+    if (type === 'switchLayer') switchBaseLayer(payload)
+    if (type === 'toggleHeatmap') toggleHeatmap()
+    if (type === 'flyTo') map?.flyTo([payload.lat, payload.lon], 8, { duration: 1.5 })
+  })
 })
 
 /**
  * 监听数据变化
  */
-watch(() => store.features, renderLayers, { deep: true })
+watch(() => filterStore.filteredFeatures, renderLayers, { deep: true })
 
 /**
  * 组件卸载时清理
@@ -242,9 +247,6 @@ onUnmounted(() => {
     map.remove()
     map = null
   }
-  
-  // 清理全局引用
-  delete window.mapInstance
 })
 
 /**
@@ -260,32 +262,5 @@ defineExpose({
   <div class="relative w-full h-full">
     <!-- 地图容器 -->
     <div ref="mapEl" class="w-full h-full" />
-    
-    <!-- 图例 -->
-    <div class="absolute bottom-4 left-4 bg-white/90 backdrop-blur p-3 rounded-lg shadow-lg z-10">
-      <div class="text-sm font-bold mb-2">震级图例</div>
-      <div class="space-y-1 text-xs">
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full" style="background: #ef4444"></span>
-          <span>≥ 7.0</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full" style="background: #f97316"></span>
-          <span>6.0 - 7.0</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full" style="background: #eab308"></span>
-          <span>5.0 - 6.0</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full" style="background: #22c55e"></span>
-          <span>4.0 - 5.0</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="w-3 h-3 rounded-full" style="background: #0ea5e9"></span>
-          <span>< 4.0</span>
-        </div>
-      </div>
-    </div>
   </div>
 </template>

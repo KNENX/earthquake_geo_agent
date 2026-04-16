@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { CopyDocument } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   role: {
@@ -112,69 +113,6 @@ async function copyContent() {
 </template>
 
 <style scoped>
-/* Markdown样式覆盖 */
-.prose :deep(p) {
-  margin: 0.5em 0;
-}
-
-.prose :deep(ul), .prose :deep(ol) {
-  margin: 0.5em 0;
-  padding-left: 1.5em;
-}
-
-.prose :deep(li) {
-  margin: 0.25em 0;
-}
-
-.prose :deep(code) {
-  background-color: rgba(0, 0, 0, 0.05);
-  padding: 0.2em 0.4em;
-  border-radius: 3px;
-  font-family: monospace;
-  font-size: 0.9em;
-}
-
-.prose :deep(pre) {
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  padding: 1em;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 0.5em 0;
-}
-
-.prose :deep(pre code) {
-  background-color: transparent;
-  padding: 0;
-  color: inherit;
-}
-
-.prose :deep(h1), .prose :deep(h2), .prose :deep(h3) {
-  margin: 0.8em 0 0.4em;
-  font-weight: 600;
-}
-
-.prose :deep(strong) {
-  font-weight: 600;
-}
-
-.prose :deep(table) {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 0.5em 0;
-}
-
-.prose :deep(th), .prose :deep(td) {
-  border: 1px solid #ddd;
-  padding: 0.4em 0.8em;
-  text-align: left;
-}
-
-.prose :deep(th) {
-  background-color: #f5f5f5;
-  font-weight: 600;
-}
-
 /* 用户消息中的链接样式 */
 .bg-blue-500 :deep(a) {
   color: #e0f2fe;

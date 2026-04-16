@@ -1,6 +1,7 @@
 <script setup>
 import { ref, nextTick, watch } from 'vue'
-import { ChatDotRound, Delete } from '@element-plus/icons-vue'
+import { ChatDotRound, Delete, VideoPause } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useEarthquakeStore } from '@/stores/earthquake'
 import { useChatStore } from '@/stores/chat'
 import { sendChatMessage } from '@/api'
@@ -11,6 +12,8 @@ const chatStore = useChatStore()
 const visible = ref(false)  // 侧边栏显示
 const message = ref('')       // 输入消息
 const messagesContainer = ref(null)  // 消息容器
+const isAutoScroll = ref(true)       // 是否允许自动滚到底部
+const abortController = ref(null)    // 用于中止流式请求的控制器
 
 // 快捷提问列表
 const quickQuestions = [
@@ -22,6 +25,16 @@ const quickQuestions = [
 ]
 
 /**
+ * 监听滚动事件，判断用户是否有上翻阅读意图
+ */
+function handleScroll(e) {
+  const el = e.target
+  if (!el) return
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  isAutoScroll.value = distanceToBottom < 80 // 给 80 像素的宽容度，防止误触
+}
+
+/**
  * 发送消息
  */
 async function sendMessage() {
@@ -30,7 +43,7 @@ async function sendMessage() {
   const userMessage = message.value.trim()
   chatStore.addUserMessage(userMessage)
   message.value = ''
-  scrollToBottom()
+  scrollToBottom(true) // 主动发送总是强制到底
 
   // 开始流式响应
   await handleStreamResponse(userMessage)
@@ -43,15 +56,19 @@ async function handleStreamResponse(userMessage) {
   chatStore.startStreaming()
   chatStore.loading = true
 
+  // 每次发起新对话前，实例化一个新的请求控制器
+  abortController.value = new AbortController()
+
   try {
     // 构建上下文消息
     const messages = buildContextMessages(userMessage)
 
-    // 发送请求
-    const response = await sendChatMessage(messages)
+    // 发送请求，带上信号量约束
+    const response = await sendChatMessage(messages, abortController.value.signal)
 
     if (!response.ok) {
-      throw new Error('请求失败')
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.detail || '请求失败，服务器异常')
     }
 
     const reader = response.body.getReader()
@@ -85,10 +102,15 @@ async function handleStreamResponse(userMessage) {
 
     chatStore.endStreaming()
   } catch (err) {
-    ElMessage.error('聊天请求失败：' + err.message)
+    if (err.name === 'AbortError') {
+      ElMessage.info('已停止生成')
+    } else {
+      ElMessage.error('聊天请求失败：' + err.message)
+    }
     chatStore.endStreaming()
   } finally {
     chatStore.loading = false
+    abortController.value = null
     scrollToBottom()
   }
 }
@@ -102,21 +124,27 @@ function buildContextMessages(userMessage) {
   // 如果有地震数据，添加上下文
   if (earthquakeStore.hasData) {
     const stats = earthquakeStore.stats
-    const topFeatures = [...earthquakeStore.features]
-      .sort((a, b) => (b.properties?.mag || 0) - (a.properties?.mag || 0))
-      .slice(0, 10)
+    // 使用新的 Top 50 列表
+    const topFeatures = stats?.top_50 || []
 
     let context = `【当前查询的地震数据背景】\n`
     context += `查询范围：${earthquakeStore.currentPlan?.starttime || '过去7天'}\n`
     context += `数据统计：共 ${earthquakeStore.count} 次地震\n`
     context += `最大震级：${stats?.max_magnitude || '-'}\n`
-    context += `平均震级：${stats?.avg_magnitude?.toFixed(2) || '-'}\n\n`
+    context += `平均震级：${stats?.avg_magnitude?.toFixed(2) || '-'}\n`
+    
+    if (stats?.dist_mag) {
+      context += `震级分布统计：${JSON.stringify(stats.dist_mag)}\n`
+    }
+    if (stats?.dist_region) {
+      context += `全量地震地域频次普查(宏观聚类)：${JSON.stringify(stats.dist_region)}\n`
+    }
+    context += `\n`
 
     if (topFeatures.length) {
-      context += `【Top ${topFeatures.length} 地震】\n`
+      context += `【Top ${topFeatures.length} 强烈地震】\n`
       topFeatures.forEach((f, i) => {
-        const p = f.properties || {}
-        context += `${i + 1}. ${p.place} | 震级:${p.mag} | 时间:${new Date(p.time).toLocaleString()}\n`
+        context += `${i + 1}. ${f.place} | 震级:${f.mag} | 深度:${f.depth}km | 时间:${f.time_str}\n`
       })
     }
 
@@ -133,11 +161,21 @@ function buildContextMessages(userMessage) {
 }
 
 /**
- * 快捷提问
+ * 发送消息
  */
 function quickAsk(text) {
   message.value = text
   sendMessage()
+}
+
+/**
+ * 手动中止生成
+ */
+function stopGeneration() {
+  if (abortController.value) {
+    abortController.value.abort()
+    abortController.value = null
+  }
 }
 
 /**
@@ -150,10 +188,12 @@ function clearChat() {
 /**
  * 滚动到底部
  */
-function scrollToBottom() {
+function scrollToBottom(force = false) {
   nextTick(() => {
     if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      if (isAutoScroll.value || force === true) {
+        messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      }
     }
   })
 }
@@ -169,6 +209,7 @@ watch(() => chatStore.messages.length, scrollToBottom)
       circle
       size="large"
       class="shadow-lg"
+      title="AI对话"
       @click="visible = true"
     >
       <el-icon :size="20"><ChatDotRound /></el-icon>
@@ -180,12 +221,14 @@ watch(() => chatStore.messages.length, scrollToBottom)
       title="AI 地震助手"
       direction="rtl"
       size="450px"
+      append-to-body
     >
       <div class="flex flex-col h-full">
         <!-- 消息区域 -->
         <div
           ref="messagesContainer"
           class="flex-1 overflow-y-auto p-4 space-y-4"
+          @scroll="handleScroll"
         >
           <!-- 欢迎消息 -->
           <div class="bg-gray-100 rounded-lg p-3 text-sm">
@@ -251,15 +294,27 @@ watch(() => chatStore.messages.length, scrollToBottom)
             :disabled="chatStore.loading"
             @keyup.enter.prevent="sendMessage"
           />
-          <el-button
-            type="primary"
-            class="mt-2 w-full"
-            :loading="chatStore.loading"
-            :disabled="!message.trim()"
-            @click="sendMessage"
-          >
-            {{ chatStore.loading ? '思考中...' : '发送' }}
-          </el-button>
+          <div class="flex gap-2 mt-2">
+            <el-button
+              v-if="chatStore.loading"
+              type="danger"
+              plain
+              class="flex-1"
+              @click="stopGeneration"
+            >
+              <el-icon class="mr-1"><VideoPause /></el-icon>
+              中止输出
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              class="w-full"
+              :disabled="!message.trim()"
+              @click="sendMessage"
+            >
+              发送
+            </el-button>
+          </div>
         </div>
       </div>
     </el-drawer>

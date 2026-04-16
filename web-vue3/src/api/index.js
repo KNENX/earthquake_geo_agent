@@ -47,13 +47,15 @@ export function fetchEarthquakeData(query) {
 /**
  * 发送聊天消息（流式）
  * @param {Array} messages - 消息历史
- * @returns {Response} - 返回流式响应
+ * @param {AbortSignal} [signal] - 用于中止请求的信号
+ * @returns {Promise<Response>} - 返回流式响应
  */
-export function sendChatMessage(messages) {
+export function sendChatMessage(messages, signal) {
   return fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages })
+    body: JSON.stringify({ messages }),
+    signal
   })
 }
 

@@ -1,6 +1,12 @@
 <script setup>
 import { ref } from 'vue'
 import { Plus, Minus, MapLocation, DataLine, Download } from '@element-plus/icons-vue'
+import { mapEventBus } from '@/composables/useMapControl'
+import { useExport } from '@/composables/useExport'
+import { useEarthquakeStore } from '@/stores/earthquake'
+
+const { exportCSV, exportGeoJSON } = useExport()
+const store = useEarthquakeStore()
 
 const currentLayer = ref('gaode')
 const isHeatmap = ref(false)
@@ -9,14 +15,14 @@ const isHeatmap = ref(false)
  * 放大
  */
 function zoomIn() {
-  window.mapInstance?.zoomIn?.()
+  mapEventBus.trigger({ type: 'zoomIn' })
 }
 
 /**
  * 缩小
  */
 function zoomOut() {
-  window.mapInstance?.zoomOut?.()
+  mapEventBus.trigger({ type: 'zoomOut' })
 }
 
 /**
@@ -27,7 +33,7 @@ function switchLayer() {
   const currentIndex = layers.indexOf(currentLayer.value)
   const nextIndex = (currentIndex + 1) % layers.length
   currentLayer.value = layers[nextIndex]
-  window.mapInstance?.switchLayer?.(currentLayer.value)
+  mapEventBus.trigger({ type: 'switchLayer', payload: currentLayer.value })
 }
 
 /**
@@ -35,15 +41,15 @@ function switchLayer() {
  */
 function toggleHeatmap() {
   isHeatmap.value = !isHeatmap.value
-  window.mapInstance?.toggleHeatmap?.()
+  mapEventBus.trigger({ type: 'toggleHeatmap' })
 }
 
 /**
  * 导出数据
  */
 function exportData(type) {
-  // TODO: 实现导出功能
-  ElMessage.info(`导出${type}功能开发中`)
+  if (type === 'CSV') exportCSV(store.features)
+  if (type === 'GeoJSON') exportGeoJSON(store.features)
 }
 </script>
 

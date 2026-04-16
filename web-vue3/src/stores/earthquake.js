@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import { fetchEarthquakeData } from '@/api'
+import { useFilterStore } from './filter'
 
 /**
  * 地震数据状态管理
@@ -13,6 +15,7 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
   const stats = ref(null)            // 统计信息
   const currentPlan = ref(null)      // 当前查询计划
   const showFilter = ref(false)      // 筛选面板显示
+  const showInfoPanel = ref(true)    // 数据展示面板显示
 
   // ========== Getters ==========
   const count = computed(() => features.value.length)
@@ -37,8 +40,22 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
       stats.value = data.stats || null
       currentPlan.value = data.plan || null
       
+      // 将大模型分析出的客观条件（如 >5级、深度>500）强行覆写给用户面的 UI 滑块与信息板，杜绝虚假显示
+      if (currentPlan.value) {
+        const filterStore = useFilterStore()
+        filterStore.setMagRange([
+          currentPlan.value.minmagnitude ?? 0,
+          currentPlan.value.maxmagnitude ?? 10
+        ])
+        filterStore.setDepthRange([
+          currentPlan.value.mindepth ?? 0,
+          currentPlan.value.maxdepth ?? 700
+        ])
+      }
+      
       // 显示成功提示（如果数据不为空）
       if (features.value.length > 0) {
+        showInfoPanel.value = true // 查询到数据时始终自动弹开面板
         ElMessage.success(`查询成功，共找到 ${features.value.length} 条地震数据`)
       } else {
         ElMessage.warning('未找到符合条件的地震数据')
@@ -76,7 +93,7 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
 
   return {
     // State
-    features, loading, error, stats, currentPlan, showFilter,
+    features, loading, error, stats, currentPlan, showFilter, showInfoPanel,
     // Getters
     count, hasData, maxMagnitude,
     // Actions

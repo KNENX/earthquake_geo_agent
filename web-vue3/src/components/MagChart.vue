@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { Chart } from 'chart.js'
+import Chart from 'chart.js/auto'
 
 const props = defineProps({
   features: {
@@ -80,11 +80,7 @@ function renderChart() {
       cutout: '60%',
       plugins: {
         legend: {
-          position: 'right',
-          labels: {
-            boxWidth: 12,
-            font: { size: 11 }
-          }
+          display: false
         },
         tooltip: {
           callbacks: {
