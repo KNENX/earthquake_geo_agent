@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $ROOT = Resolve-Path (Join-Path $PSScriptRoot "..")
 $API_DIR = Join-Path $ROOT "api"
-$WEB_DIR = Join-Path $ROOT "web-vue3"
+$WEB_DIR = Join-Path $ROOT "web"
 $PIDS_DIR = Join-Path $PSScriptRoot "pids"
 
 # Ensure pids directory exists
@@ -69,7 +69,7 @@ if (-not $apiRunning) {
 
 # ---- Start Web Frontend ----
 $webRunning = $false
-$webPortConnections = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
+$webPortConnections = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
 if ($null -ne $webPortConnections) {
   Write-Host "Web (Frontend): Already running (Port 5173 is in use)"
   $webRunning = $true
@@ -111,7 +111,7 @@ if (-not $webRunning) {
 
 Write-Host ""
 Write-Host "========== Service URLs =========="
-Write-Host "  Frontend: http://localhost:5173/"
+Write-Host "  Frontend: http://localhost:3000/"
 Write-Host "  Backend:  http://127.0.0.1:8000/docs"
 Write-Host ""
 Write-Host "Commands:"

@@ -51,7 +51,7 @@ Write-Host ""
 Write-Host "========== Stopping Services =========="
 
 # Stop frontend first, then backend
-Stop-ByPortAndPid -pidFile $webPidFile -name "Web (Frontend)" -port 5173
+Stop-ByPortAndPid -pidFile $webPidFile -name "Web (Frontend)" -port 3000
 Stop-ByPortAndPid -pidFile $apiPidFile -name "API (Backend)" -port 8000
 
 Write-Host ""

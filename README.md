@@ -25,8 +25,16 @@
 
 ```
 earthquake_agent/
-├── api/                          # 后端 (FastAPI)
-│   ├── main.py                   # 核心服务：查询解析、USGS 调用、地理过滤、AI 对话
+├── api/                          # 后端 (FastAPI + 模块化架构)
+│   ├── main.py                   # API 路由入口（调度中心）
+│   ├── config.py                 # 全局配置（时区、常量、环境变量）
+│   ├── models.py                 # Pydantic 数据模型
+│   ├── llm.py                    # LLM 交互层（Prompt、校验、自愈重试）
+│   ├── geo.py                    # 地理空间引擎（边界加载、多边形过滤）
+│   ├── usgs.py                   # USGS 数据抽取（跨日期线分割）
+│   ├── stats.py                  # 统计计算引擎（Top50、分布分析）
+│   ├── cache.py                  # 双层缓存（USGS + LLM）
+│   ├── logger.py                 # JSONL 日志记录
 │   ├── requirements.txt
 │   ├── .env                      # API 密钥与模型配置
 │   └── boundaries/               # 地理边界数据
@@ -34,11 +42,13 @@ earthquake_agent/
 │       ├── natural_earth/        # 全球国家边界 (Natural Earth)
 │       └── regions.json          # 洲/大洋等特殊区域定义
 │
-├── web/                          # 前端 (原生 JS + Vite)
-│   ├── index.html
-│   └── src/
-│       ├── main.js               # 前端逻辑：地图、图表、对话、筛选
-│       └── style.css             # 样式
+├── web/                          # 前端 (Vue 3 + Element Plus + Tailwind CSS)
+│   ├── src/
+│   │   ├── components/           # UI 组件（搜索、地图、信息面板、AI对话等）
+│   │   ├── stores/               # Pinia 状态管理
+│   │   ├── composables/          # 可复用逻辑
+│   │   └── api/                  # Axios 接口封装
+│   └── index.html
 │
 └── scripts/                      # 管理脚本 (PowerShell)
     ├── start.ps1                 # 启动前后端
@@ -54,8 +64,8 @@ earthquake_agent/
 | 地理计算 | GeoPandas / Shapely | 多边形空间过滤 |
 | 查询解析 LLM | Qwen 2.5-7B-Instruct (SiliconFlow) | 自然语言 → 结构化查询计划 |
 | 对话 LLM | DeepSeek V3.2 (SiliconFlow) | 数据分析与知识问答 |
-| 前端 | JavaScript ES6+ / Leaflet / Chart.js | 地图可视化与交互 |
-| 构建 | Vite | 开发服务器 |
+| 前端 | Vue 3 / Element Plus / Tailwind CSS / Pinia | 组件化 SPA 应用 |
+| 构建 | Vite 5 | 开发服务器 |
 
 ### 数据流
 
@@ -216,7 +226,7 @@ npm run dev
 
 ### 7. 访问
 
-- 前端：http://localhost:5173/
+- 前端：http://localhost:3000/
 - API 文档：http://127.0.0.1:8000/docs
 
 ---
@@ -247,7 +257,7 @@ npm run dev
 | 问题 | 排查方向 |
 |------|---------|
 | AI 对话无响应 / 502 | 检查 `.env` 中 API Key 是否有效，后端是否启动 |
-| 前端连不上后端 | 确认 `web/src/main.js` 中 `BACKEND_BASE` 地址与后端端口一致 |
+| 前端连不上后端 | 确认 `web/vite.config.js` 中代理配置与后端端口一致 |
 | 区域识别不工作 | 确认 `api/boundaries/` 下三份地理数据文件完整 |
 | 查询较慢 | 首次查询需 LLM 解析 + USGS 调用，重复查询会命中缓存（5 分钟 TTL） |
 

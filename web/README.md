@@ -36,7 +36,7 @@
 ### 安装依赖
 
 ```bash
-cd web-vue3
+cd web
 npm install
 ```
 
@@ -46,7 +46,7 @@ npm install
 npm run dev
 ```
 
-访问 http://localhost:5174
+访问 http://localhost:3000
 
 ### 生产构建
 
