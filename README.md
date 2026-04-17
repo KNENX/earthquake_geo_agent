@@ -83,11 +83,11 @@ pip install -r requirements.txt
 在 `api/` 下创建 `.env` 文件：
 
 ```env
-QUERY_API_KEY=你的_SiliconFlow_API_密钥
+QUERY_API_KEY=你的_API_密钥
 QUERY_BASE_URL=https://api.siliconflow.cn/v1
 QUERY_MODEL=Qwen/Qwen2.5-7B-Instruct
 
-CHAT_API_KEY=你的_SiliconFlow_API_密钥
+CHAT_API_KEY=你的_API_密钥
 CHAT_BASE_URL=https://api.siliconflow.cn/v1
 CHAT_MODEL=deepseek-ai/DeepSeek-V3
 ```
