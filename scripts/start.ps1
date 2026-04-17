@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $ROOT = Resolve-Path (Join-Path $PSScriptRoot "..")
 $API_DIR = Join-Path $ROOT "api"
-$WEB_DIR = Join-Path $ROOT "web"
+$WEB_DIR = Join-Path $ROOT "web-vue3"
 $PIDS_DIR = Join-Path $PSScriptRoot "pids"
 
 # Ensure pids directory exists

@@ -121,14 +121,19 @@ async function handleStreamResponse(userMessage) {
 function buildContextMessages(userMessage) {
   const messages = []
 
-  // 如果有地震数据，添加上下文
+  // 如果有地震数据，添加精确的上下文
   if (earthquakeStore.hasData) {
     const stats = earthquakeStore.stats
-    // 使用新的 Top 50 列表
+    const params = earthquakeStore.usgsParams
     const topFeatures = stats?.top_50 || []
 
+    // 从实际 USGS 请求参数中提取精确的时间范围
+    const starttime = params?.starttime || '未知'
+    const endtime = params?.endtime || '未知'
+
     let context = `【当前查询的地震数据背景】\n`
-    context += `查询范围：${earthquakeStore.currentPlan?.starttime || '过去7天'}\n`
+    context += `用户原始查询：${earthquakeStore.lastQuery || '未知'}\n`
+    context += `实际查询时间范围：${starttime} 至 ${endtime}\n`
     context += `数据统计：共 ${earthquakeStore.count} 次地震\n`
     context += `最大震级：${stats?.max_magnitude || '-'}\n`
     context += `平均震级：${stats?.avg_magnitude?.toFixed(2) || '-'}\n`
