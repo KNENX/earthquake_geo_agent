@@ -43,8 +43,8 @@ class NLPlan(BaseModel):
     maxlongitude: Optional[float] = None
 
     # --- 结果控制 ---
-    limit: int = 100
-    orderby: Literal["time", "magnitude"] = "time"
+    limit: int = 500
+    orderby: Literal["time", "magnitude"] = "magnitude"
 
 
 class ChatMessage(BaseModel):

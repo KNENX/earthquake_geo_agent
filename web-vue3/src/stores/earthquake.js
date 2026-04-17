@@ -14,6 +14,8 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
   const error = ref(null)            // 错误信息
   const stats = ref(null)            // 统计信息
   const currentPlan = ref(null)      // 当前查询计划
+  const usgsParams = ref(null)       // 实际发送给 USGS 的请求参数（含绝对时间）
+  const lastQuery = ref('')          // 用户的原始查询语句
   const showFilter = ref(false)      // 筛选面板显示
   const showInfoPanel = ref(true)    // 数据展示面板显示
 
@@ -39,6 +41,8 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
       features.value = data.geojson?.features || []
       stats.value = data.stats || null
       currentPlan.value = data.plan || null
+      usgsParams.value = data.usgs_params || null
+      lastQuery.value = query
       
       // 将大模型分析出的客观条件（如 >5级、深度>500）强行覆写给用户面的 UI 滑块与信息板，杜绝虚假显示
       if (currentPlan.value) {
@@ -67,6 +71,8 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
       features.value = []
       stats.value = null
       currentPlan.value = null
+      usgsParams.value = null
+      lastQuery.value = ''
       ElMessage.error('查询失败：' + err.message)
       throw err
     } finally {
@@ -81,6 +87,8 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
     features.value = []
     stats.value = null
     currentPlan.value = null
+    usgsParams.value = null
+    lastQuery.value = ''
     error.value = null
   }
 
@@ -93,7 +101,7 @@ export const useEarthquakeStore = defineStore('earthquake', () => {
 
   return {
     // State
-    features, loading, error, stats, currentPlan, showFilter, showInfoPanel,
+    features, loading, error, stats, currentPlan, usgsParams, lastQuery, showFilter, showInfoPanel,
     // Getters
     count, hasData, maxMagnitude,
     // Actions

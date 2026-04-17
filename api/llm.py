@@ -88,23 +88,9 @@ def validate_plan(plan: NLPlan) -> NLPlan:
         plan.window_unit = "days"
         plan.window_value = 7
 
-    # 2. 数量限制：长周期查询强制提高 limit
-    time_span_days = 0
-    if plan.window_value and plan.window_unit == 'days':
-        time_span_days = plan.window_value
-    elif plan.window_value and plan.window_unit == 'hours':
-        time_span_days = plan.window_value / 24
-    elif plan.starttime and plan.endtime:
-        try:
-            s = datetime.fromisoformat(plan.starttime.replace("Z", ""))
-            e = datetime.fromisoformat(plan.endtime.replace("Z", ""))
-            time_span_days = (e - s).days
-        except Exception:
-            pass
-
-    if time_span_days > 30 and plan.limit < 500:
-        plan.limit = 500
-    plan.limit = _clamp_int(plan.limit, 1, 500)
+    # 2. 数量限制：不论时间跨界，全部统一为 500 条大震最优排序
+    plan.limit = 500
+    plan.orderby = "magnitude"
 
     # 3. 震级范围归一化 (0-10)
     if plan.minmagnitude is not None:
@@ -244,9 +230,8 @@ Schema:
 
 【处理规则 (严格执行)】
 
-1. **Limit 限制**:
-   - 默认查询较短时间时，limit=100 (按时间排序)
-   - **长周期查询 (>1个月)**：limit=500, orderby="magnitude" (优先看大震)
+1. **Limit 与排序规则**:
+   - 无论查询周期长短，均**强制固定** limit=500 且 orderby="magnitude"（优先看大震）。
    - **相对时间**: 
      - "过去3天" -> window_unit="days", window_value=3
      - "过去24小时" -> window_unit="hours", window_value=24
@@ -284,7 +269,7 @@ User: 过去10年全球8级大地震
 JSON: {{
   "window_unit": "days", "window_value": 3650,
   "minmagnitude": 8.0,
-  "limit": 100, "orderby": "time"
+  "limit": 500, "orderby": "magnitude"
 }}
 
 User: 2008年汶川地震
@@ -292,7 +277,7 @@ JSON: {{
   "starttime": "2008-05-12", "endtime": "2008-05-13",
   "minlatitude": 30.5, "maxlatitude": 32.0, "minlongitude": 103.0, "maxlongitude": 105.0,
   "minmagnitude": 6.0,
-  "limit": 50
+  "limit": 500, "orderby": "magnitude"
 }}
 
 User: 去年日本所有的有感地震
